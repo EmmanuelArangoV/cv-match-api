@@ -10,7 +10,8 @@ celery_app = Celery(
     backend=settings.redis_url,
     include=[
         "src.infrastructure.workers.tasks.parse_cv",
-        "src.infrastructure.workers.tasks.whatsapp"
+        "src.infrastructure.workers.tasks.whatsapp",
+        "src.infrastructure.workers.tasks.run_match",
     ],
 )
 
