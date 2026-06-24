@@ -58,7 +58,7 @@ async def test_whatsapp(phone_number: str):
         session.add(pc)
 
         await session.commit()
-        print(f"✅ Datos de prueba creados en BD. ProcessCandidate ID: {pc_id}")
+        print(f"Datos de prueba creados en BD. ProcessCandidate ID: {pc_id}")
 
         # 4. Enviar el mensaje inicial usando el cliente directamente (para no depender de Celery aquí)
         print(f"Enviando plantilla a {phone_number}...")
@@ -67,8 +67,8 @@ async def test_whatsapp(phone_number: str):
             template_name="hello_world",
             language_code="en_US"
         )
-        print(f"✅ Mensaje enviado! Respuesta de Meta: {res}")
-        print("\n⏳ ¡Revisa tu celular! Cuando respondas el mensaje, el webhook de Ngrok lo recibirá y OpenAI te contestará.")
+        print(f"Mensaje enviado! Respuesta de Meta: {res}")
+        print("\n¡Revisa tu celular! Cuando respondas el mensaje, el webhook de Ngrok lo recibirá y OpenAI te contestará.")
 
 if __name__ == "__main__":
     import sys

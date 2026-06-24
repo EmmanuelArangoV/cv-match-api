@@ -29,7 +29,7 @@ class WhatsAppClient:
         async with httpx.AsyncClient() as client:
             response = await client.post(url, headers=self.headers, json=payload)
             if response.status_code >= 400:
-                print(f"❌ Error de Meta: {response.text}")
+                print(f"Error de Meta: {response.text}")
             response.raise_for_status()
             return response.json()
 
