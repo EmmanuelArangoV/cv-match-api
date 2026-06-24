@@ -17,6 +17,21 @@ from src.infrastructure.db.models import (
 )
 from src.infrastructure.messaging.whatsapp_client import whatsapp_client
 
+# Títulos exactos de los botones de la plantilla aprobada por Meta
+_BUTTON_ACCEPT = "sí, acepto"
+_BUTTON_REJECT = "no, gracias"
+
+
+def _resolve_button_intent(text: str) -> str | None:
+    """Si el texto es un clic de botón conocido, retorna el intent directamente."""
+    normalized = text.strip().lower()
+    if normalized == _BUTTON_ACCEPT:
+        return "ACCEPTED"
+    if normalized == _BUTTON_REJECT:
+        return "REJECTED"
+    return None
+
+
 _AGENT_SYSTEM_PROMPT = """\
 Eres "Riwi", el asistente virtual de Talent Acquisition de Riwi Corp por WhatsApp.
 Tu misión es gestionar el consentimiento del candidato para una breve entrevista de voz automatizada
@@ -95,6 +110,18 @@ SOBRE RESCHEDULING:
 """
 
 
+_ACCEPT_REPLY = (
+    "Perfecto, muchas gracias por aceptar. "
+    "Te contactaremos pronto para la entrevista de voz. "
+    "Recuerda que la llamada dura maximo 5 minutos."
+)
+_REJECT_REPLY = (
+    "Entendido, respetamos tu decision. "
+    "No te contactaremos por esta vacante. "
+    "Si en algun momento cambias de opinion o tienes preguntas, estamos aqui."
+)
+
+
 class ProcessWhatsAppMessageUseCase:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
@@ -137,6 +164,12 @@ class ProcessWhatsAppMessageUseCase:
         process = pc.process
 
         # Construir el prompt con contexto real
+        # Clics de botón de la plantilla — respuesta directa sin pasar por IA
+        button_intent = _resolve_button_intent(message_text)
+        if button_intent:
+            await self._apply_intent(pc, button_intent, None, from_phone)
+            return
+
         prompt = _AGENT_SYSTEM_PROMPT.format(
             candidate_name=f"{candidate.name} {candidate.last_name}".strip(),
             job_title=process.job_title,
@@ -158,20 +191,29 @@ class ProcessWhatsAppMessageUseCase:
         reply: str = analysis.get("reply_text", "")
         availability: dict | None = analysis.get("availability")
 
-        # Actualizar BD según intención
+        await self._apply_intent(pc, intent, availability, from_phone, reply)
+
+    async def _apply_intent(
+        self,
+        pc: ProcessCandidate,
+        intent: str,
+        availability: dict | None,
+        from_phone: str,
+        reply: str = "",
+    ) -> None:
         if intent == "ACCEPTED":
             pc.whatsapp_consent_status = WhatsAppConsentStatus.ACCEPTED.value
             pc.whatsapp_responded_at = datetime.now(timezone.utc)
+            reply = reply or _ACCEPT_REPLY
         elif intent == "REJECTED":
             pc.whatsapp_consent_status = WhatsAppConsentStatus.REJECTED.value
             pc.whatsapp_responded_at = datetime.now(timezone.utc)
+            reply = reply or _REJECT_REPLY
 
-        # Disponibilidad se guarda tanto en ACCEPTED como en AVAILABILITY_ONLY
         if availability and intent in ("ACCEPTED", "AVAILABILITY_ONLY"):
             pc.availability_preference = availability
 
         await self.db.commit()
 
-        # Enviar respuesta al candidato
         if reply:
             await whatsapp_client.send_text_message(to_phone=from_phone, message=reply)
