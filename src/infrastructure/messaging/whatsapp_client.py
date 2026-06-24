@@ -29,7 +29,7 @@ class WhatsAppClient:
             "to": to_phone,
             "type": "template",
             "template": {
-                "name": "consentimiento_entrevista_voz",
+                "name": "consentimiento_entrevista",
                 "language": {"code": "es"},
                 "components": [
                     {
