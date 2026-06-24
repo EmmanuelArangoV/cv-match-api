@@ -1,0 +1,86 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cv-match-api"
+version = "0.1.0"
+description = "RIWI MATCH — AI-powered CV matching and profiling API"
+requires-python = ">=3.12"
+
+dependencies = [
+    # Web framework
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "python-multipart>=0.0.12",
+
+    # Validation & settings
+    "pydantic[email]>=2.9.0",
+    "pydantic-settings>=2.6.0",
+
+    # Database
+    "sqlalchemy[asyncio]>=2.0.36",
+    "alembic>=1.14.0",
+    "asyncpg>=0.30.0",
+    "psycopg2-binary>=2.9.0",
+    "pgvector>=0.3.6",
+
+    # Auth
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+
+    # Queue & cache
+    "celery[redis]>=5.4.0",
+    "redis>=5.2.0",
+
+    # AI
+    "openai>=1.55.0",
+
+    # Storage (Cloudflare R2 — S3 compatible)
+    "boto3>=1.35.0",
+
+    # PDF parsing
+    "pymupdf>=1.24.0",
+
+    # Phone normalization
+    "phonenumbers>=8.13.0",
+
+    # HTTP client (ElevenLabs, Meta WhatsApp)
+    "httpx>=0.28.0",
+
+    # Logging
+    "structlog>=24.4.0",
+
+    # Utils
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "httpx>=0.28.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
