@@ -18,6 +18,7 @@ async def verify_whatsapp_webhook(request: Request):
     if mode and token:
         if mode == "subscribe" and token == settings.meta_whatsapp_verify_token:
             return Response(content=challenge, status_code=200)
+        print(f"WEBHOOK ERROR: Received token='{token}', Expected='{settings.meta_whatsapp_verify_token}'")
         raise HTTPException(status_code=403, detail="Verification token mismatch")
     raise HTTPException(status_code=400, detail="Missing parameters")
 

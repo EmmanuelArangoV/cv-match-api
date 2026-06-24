@@ -8,7 +8,10 @@ celery_app = Celery(
     "riwi_match",
     broker=settings.redis_url,
     backend=settings.redis_url,
-    include=["src.infrastructure.workers.tasks.parse_cv"],
+    include=[
+        "src.infrastructure.workers.tasks.parse_cv",
+        "src.infrastructure.workers.tasks.whatsapp"
+    ],
 )
 
 _ssl_opts = {"ssl_cert_reqs": ssl.CERT_NONE}

@@ -3,6 +3,7 @@ from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from sqlalchemy.orm import selectinload
 from src.config import settings
 from src.infrastructure.db.models import ProcessCandidate, Candidate, WhatsAppConsentStatus, HiringProcess
 from src.infrastructure.messaging.whatsapp_client import whatsapp_client
@@ -20,7 +21,8 @@ class ProcessWhatsAppMessageUseCase:
             .join(Candidate)
             .join(HiringProcess)
             .where(Candidate.phone == from_phone)
-            .where(ProcessCandidate.whatsapp_consent_status == WhatsAppConsentStatus.PENDING.value)
+            .where(ProcessCandidate.whatsapp_consent_status == WhatsAppConsentStatus.PENDING)
+            .options(selectinload(ProcessCandidate.process), selectinload(ProcessCandidate.candidate))
             .order_by(ProcessCandidate.created_at.desc())
         )
         result = await self.db.execute(stmt)
@@ -34,8 +36,8 @@ class ProcessWhatsAppMessageUseCase:
             )
             return
 
-        process = await pc.awaitable_attrs.process
-        candidate = await pc.awaitable_attrs.candidate
+        process = pc.process
+        candidate = pc.candidate
 
         # 2. Interpretar la intención y generar respuesta con IA
         system_prompt = f"""
@@ -64,7 +66,8 @@ class ProcessWhatsAppMessageUseCase:
         )
 
         import json
-        analysis = json.loads(ai_response.choices[0].message.content)
+        content = ai_response.choices[0].message.content
+        analysis = json.loads(content) if content else {}
 
         intent = analysis.get("intent")
         reply = analysis.get("reply_text")
@@ -75,9 +78,9 @@ class ProcessWhatsAppMessageUseCase:
         pc.whatsapp_responded_at = datetime.now(timezone.utc)
 
         if intent == "ACCEPTED":
-            pc.whatsapp_consent_status = WhatsAppConsentStatus.ACCEPTED.value
+            pc.whatsapp_consent_status = WhatsAppConsentStatus.ACCEPTED
         elif intent == "REJECTED":
-            pc.whatsapp_consent_status = WhatsAppConsentStatus.REJECTED.value
+            pc.whatsapp_consent_status = WhatsAppConsentStatus.REJECTED
 
         if availability:
             pc.availability_preference = {"note": availability}

@@ -155,6 +155,10 @@ def parse_cv(
             db.add(cost_log)
             db.commit()
 
+            # Disparar tarea asíncrona de WhatsApp
+            from src.infrastructure.workers.tasks.whatsapp import send_whatsapp_consent
+            send_whatsapp_consent.delay(process_candidate_id)
+
             return {
                 "candidate_id": candidate_id,
                 "status": "MATCH_PENDING",
