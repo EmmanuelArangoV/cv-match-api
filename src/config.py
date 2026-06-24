@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     meta_whatsapp_phone_number_id: str = ""
     meta_whatsapp_access_token: str = ""
     meta_whatsapp_verify_token: str = ""
+    meta_whatsapp_webhook_secret: str = ""
 
     # Business rules
     max_concurrent_calls: int = 4
