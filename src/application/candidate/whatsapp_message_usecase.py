@@ -50,11 +50,16 @@ class ProcessWhatsAppMessageUseCase:
         Si la intención es ACCEPTED, agradécele y dile que lo llamaremos pronto.
         Si la intención es REJECTED, despídete y confirma que no lo llamaremos.
         
+        Si el candidato menciona cuándo prefiere ser llamado, debes estructurarlo en el campo "availability" bajo uno de estos dos formatos:
+        Formato 1 (Preferencia general): {{"preference": "ANYTIME" | "MORNING" | "AFTERNOON"}}
+        Formato 2 (Ventana específica): {{"preference": "SPECIFIC_WINDOW", "date": "YYYY-MM-DD", "start_time": "HH:MM", "end_time": "HH:MM"}}
+        Si no menciona nada sobre su disponibilidad, "availability" debe ser null.
+        
         Devuelve estrictamente un JSON con esta estructura:
         {{
             "intent": "ACCEPTED" | "REJECTED" | "QUESTION",
             "reply_text": "El texto que le enviaremos de vuelta por WhatsApp respondiendo a lo que dijo",
-            "availability": "Si mencionó alguna fecha u hora, escríbela aquí, si no, null"
+            "availability": <objeto_json_o_null>
         }}
         """
 
@@ -83,7 +88,7 @@ class ProcessWhatsAppMessageUseCase:
             pc.whatsapp_consent_status = WhatsAppConsentStatus.REJECTED
 
         if availability:
-            pc.availability_preference = {"note": availability}
+            pc.availability_preference = availability
 
         await self.db.commit()
 
