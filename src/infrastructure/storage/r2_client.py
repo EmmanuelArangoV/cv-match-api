@@ -51,3 +51,8 @@ async def delete_file(key: str) -> None:
 
 def download_file_sync(key: str) -> bytes:
     return _download_sync(key)
+
+
+def upload_file_sync(key: str, data: bytes, content_type: str = "application/pdf") -> str:
+    _upload_sync(key, data, content_type)
+    return key

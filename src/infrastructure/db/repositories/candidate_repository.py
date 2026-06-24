@@ -47,6 +47,7 @@ class CandidateRepository:
             select(ProcessCandidate)
             .where(ProcessCandidate.process_id == process_id)
             .options(selectinload(ProcessCandidate.candidate))
+            .order_by(ProcessCandidate.match_percentage.desc())
         )
         return list(result.scalars().all())
 
