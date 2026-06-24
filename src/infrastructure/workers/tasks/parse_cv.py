@@ -1,6 +1,6 @@
 """
-Tarea Celery: descarga el CV de R2, lo parsea con gpt-4o vision
-y guarda el perfil extraído + CV normalizado en la BD.
+Tarea Celery: descarga el CV de R2, lo parsea con gpt-4o vision,
+genera el PDF normalizado en estilo BBLABS y los sube a R2.
 """
 from __future__ import annotations
 
@@ -8,13 +8,15 @@ import base64
 import json
 import uuid
 
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF >= 1.24
 from openai import OpenAI
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from src.config import settings
-from src.infrastructure.storage.r2_client import download_file_sync
+from src.infrastructure.ai.prompts import CV_EXTRACTION_PROMPT
+from src.infrastructure.cv.pdf_renderer import render_normalized_cv
+from src.infrastructure.storage.r2_client import download_file_sync, upload_file_sync
 from src.infrastructure.workers.celery_app import celery_app
 
 _engine = create_engine(settings.database_url_sync)
@@ -27,9 +29,6 @@ def _get_openai() -> OpenAI:
 # Costo estimado gpt-4o (USD por token)
 _INPUT_COST = 0.0000025
 _OUTPUT_COST = 0.000010
-
-# Prompt vacío — se define en la etapa de prompts
-_CV_EXTRACTION_PROMPT = ""
 
 
 def _pdf_to_images(pdf_bytes: bytes) -> list[str]:
@@ -46,7 +45,7 @@ def _pdf_to_images(pdf_bytes: bytes) -> list[str]:
 
 def _call_openai(images_b64: list[str], client: OpenAI) -> tuple[dict, int, int]:
     """Llama a gpt-4o vision y retorna (resultado_json, tokens_in, tokens_out)."""
-    content: list[dict] = [{"type": "text", "text": _CV_EXTRACTION_PROMPT}]
+    content: list[dict] = [{"type": "text", "text": CV_EXTRACTION_PROMPT}]
     for b64 in images_b64:
         content.append({
             "type": "image_url",
@@ -127,6 +126,17 @@ def parse_cv(
 
             if extracted.get("phone"):
                 candidate.phone = extracted["phone"][:20]
+
+            # Generar PDF normalizado en estilo BBLABS y subirlo a R2
+            normalized_pdf_bytes = render_normalized_cv(extracted)
+            # Construye la key derivando de la original, ej: cvs/abc123.pdf → cvs/abc123_normalized.pdf
+            original_key = candidate.cv_file_url
+            if original_key.endswith(".pdf"):
+                normalized_key = original_key[:-4] + "_normalized.pdf"
+            else:
+                normalized_key = original_key + "_normalized.pdf"
+            upload_file_sync(normalized_key, normalized_pdf_bytes, "application/pdf")
+            candidate.normalized_cv_url = normalized_key
 
             # Actualizar estado del proceso-candidato
             pc.status = CandidateStatus.MATCH_PENDING.value

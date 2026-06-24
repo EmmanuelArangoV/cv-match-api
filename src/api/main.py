@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from src.api.v1 import auth, candidates, webhooks
+from src.api.v1 import auth, candidates, match, processes, webhooks
 from src.config import settings
 from src.domain.shared.exceptions import (
     BusinessRuleException,
@@ -63,8 +63,10 @@ async def domain_handler(_: Request, exc: DomainException) -> JSONResponse:
 
 # Routers
 app.include_router(auth.router, prefix="/api/v1")
+app.include_router(processes.router, prefix="/api/v1")
 app.include_router(candidates.router, prefix="/api/v1")
 app.include_router(webhooks.router, prefix="/api/v1")
+app.include_router(match.router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["Health"])

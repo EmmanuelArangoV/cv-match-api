@@ -240,6 +240,7 @@ class Candidate(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
     cv_file_url: Mapped[str] = mapped_column(TEXT, nullable=False)
+    normalized_cv_url: Mapped[str | None] = mapped_column(TEXT, nullable=True)
     extracted_profile: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     normalized_cv: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     cv_embedding: Mapped[list | None] = mapped_column(Vector(1536), nullable=True)
