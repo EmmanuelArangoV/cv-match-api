@@ -15,6 +15,7 @@ def _get_client():
         aws_secret_access_key=settings.r2_secret_access_key,
         config=Config(signature_version="s3v4"),
         region_name="auto",
+        verify=False,  # Python 3.13 SSL compat with Cloudflare R2
     )
 
 
