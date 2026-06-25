@@ -1,0 +1,343 @@
+import uuid
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from src.api.deps import RequireRecruiter, get_current_user
+from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
+from src.infrastructure.db.database import get_db
+from src.infrastructure.db.models import (
+    ProfilingQuestion,
+    QuestionSet,
+    QuestionSetStatus,
+    QuestionType,
+    User,
+)
+
+router = APIRouter(prefix="/question-sets", tags=["Question Sets"])
+
+
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
+
+VALID_QUESTION_TYPES = {qt.value for qt in QuestionType}
+VALID_SET_STATUSES = {s.value for s in QuestionSetStatus}
+
+
+class QuestionIn(BaseModel):
+    order_index: int = 0
+    text: str = Field(..., min_length=5)
+    type: str = Field(default=QuestionType.OPEN.value)
+    expected_answer: str | None = None
+    positive_keywords: list[str] = []
+    risk_keywords: list[str] = []
+    weight: int = Field(default=10, ge=1, le=100)
+    is_critical: bool = False
+    eval_criteria: str | None = None
+
+    def validate_type(self) -> None:
+        if self.type not in VALID_QUESTION_TYPES:
+            raise BusinessRuleException(
+                f"Tipo de pregunta inválido: '{self.type}'. Valores válidos: {sorted(VALID_QUESTION_TYPES)}"
+            )
+
+
+class CreateQuestionSetRequest(BaseModel):
+    name: str = Field(..., min_length=3, max_length=255)
+    description: str | None = None
+    questions: list[QuestionIn] = []
+
+
+class UpdateQuestionSetRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    status: str | None = None
+
+
+class AddQuestionRequest(BaseModel):
+    order_index: int = 0
+    text: str = Field(..., min_length=5)
+    type: str = Field(default=QuestionType.OPEN.value)
+    expected_answer: str | None = None
+    positive_keywords: list[str] = []
+    risk_keywords: list[str] = []
+    weight: int = Field(default=10, ge=1, le=100)
+    is_critical: bool = False
+    eval_criteria: str | None = None
+
+
+class UpdateQuestionRequest(BaseModel):
+    order_index: int | None = None
+    text: str | None = None
+    type: str | None = None
+    expected_answer: str | None = None
+    positive_keywords: list[str] | None = None
+    risk_keywords: list[str] | None = None
+    weight: int | None = None
+    is_critical: bool | None = None
+    eval_criteria: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _serialize_question(q: ProfilingQuestion) -> dict:
+    return {
+        "id": str(q.id),
+        "question_set_id": str(q.question_set_id),
+        "order_index": q.order_index,
+        "text": q.text,
+        "type": q.type,
+        "expected_answer": q.expected_answer,
+        "positive_keywords": q.positive_keywords or [],
+        "risk_keywords": q.risk_keywords or [],
+        "weight": q.weight,
+        "is_critical": q.is_critical,
+        "eval_criteria": q.eval_criteria,
+    }
+
+
+def _serialize_set(qs: QuestionSet, include_questions: bool = False) -> dict:
+    data: dict = {
+        "id": str(qs.id),
+        "name": qs.name,
+        "description": qs.description,
+        "version": qs.version,
+        "status": qs.status,
+        "created_by": str(qs.created_by),
+        "created_at": qs.created_at.isoformat(),
+        "updated_at": qs.updated_at.isoformat(),
+    }
+    if include_questions:
+        data["questions"] = [_serialize_question(q) for q in qs.questions]
+    return data
+
+
+async def _get_set_or_404(qs_id: uuid.UUID, db: AsyncSession, with_questions: bool = False) -> QuestionSet:
+    query = select(QuestionSet).where(QuestionSet.id == qs_id)
+    if with_questions:
+        query = query.options(selectinload(QuestionSet.questions))
+    result = await db.execute(query)
+    qs = result.scalar_one_or_none()
+    if not qs:
+        raise NotFoundException("Set de preguntas no encontrado")
+    return qs
+
+
+# ---------------------------------------------------------------------------
+# Endpoints — Question Sets
+# ---------------------------------------------------------------------------
+
+@router.post("", status_code=201)
+async def create_question_set(
+    body: CreateQuestionSetRequest,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    qs = QuestionSet(
+        name=body.name,
+        description=body.description,
+        version=1,
+        status=QuestionSetStatus.DRAFT.value,
+        created_by=current_user.id,
+    )
+    db.add(qs)
+    await db.flush()  # genera el id antes de las preguntas
+
+    for i, q in enumerate(body.questions):
+        q.validate_type()
+        pq = ProfilingQuestion(
+            question_set_id=qs.id,
+            order_index=q.order_index if q.order_index else i,
+            text=q.text,
+            type=q.type,
+            expected_answer=q.expected_answer,
+            positive_keywords=q.positive_keywords or [],
+            risk_keywords=q.risk_keywords or [],
+            weight=q.weight,
+            is_critical=q.is_critical,
+            eval_criteria=q.eval_criteria,
+        )
+        db.add(pq)
+
+    await db.commit()
+    await db.refresh(qs)
+
+    result = await db.execute(
+        select(QuestionSet)
+        .where(QuestionSet.id == qs.id)
+        .options(selectinload(QuestionSet.questions))
+    )
+    qs = result.scalar_one()
+    return _serialize_set(qs, include_questions=True)
+
+
+@router.get("")
+async def list_question_sets(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    result = await db.execute(
+        select(QuestionSet)
+        .options(selectinload(QuestionSet.questions))
+        .order_by(QuestionSet.created_at.desc())
+    )
+    sets = list(result.scalars().all())
+    return {
+        "total": len(sets),
+        "question_sets": [_serialize_set(qs, include_questions=True) for qs in sets],
+    }
+
+
+@router.get("/{question_set_id}")
+async def get_question_set(
+    question_set_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    qs = await _get_set_or_404(question_set_id, db, with_questions=True)
+    return _serialize_set(qs, include_questions=True)
+
+
+@router.patch("/{question_set_id}")
+async def update_question_set(
+    question_set_id: uuid.UUID,
+    body: UpdateQuestionSetRequest,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    qs = await _get_set_or_404(question_set_id, db)
+
+    if body.name is not None:
+        qs.name = body.name
+    if body.description is not None:
+        qs.description = body.description
+    if body.status is not None:
+        if body.status not in VALID_SET_STATUSES:
+            raise BusinessRuleException(f"Estado inválido: '{body.status}'. Valores válidos: {sorted(VALID_SET_STATUSES)}")
+        qs.status = body.status
+
+    await db.commit()
+    await db.refresh(qs)
+    return _serialize_set(qs)
+
+
+@router.delete("/{question_set_id}", status_code=204)
+async def delete_question_set(
+    question_set_id: uuid.UUID,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    qs = await _get_set_or_404(question_set_id, db)
+    await db.delete(qs)
+    await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Endpoints — Questions dentro de un set
+# ---------------------------------------------------------------------------
+
+@router.post("/{question_set_id}/questions", status_code=201)
+async def add_question(
+    question_set_id: uuid.UUID,
+    body: AddQuestionRequest,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    qs = await _get_set_or_404(question_set_id, db, with_questions=True)
+
+    if body.type not in VALID_QUESTION_TYPES:
+        raise BusinessRuleException(
+            f"Tipo de pregunta inválido: '{body.type}'. Valores válidos: {sorted(VALID_QUESTION_TYPES)}"
+        )
+
+    # Auto order_index si no viene
+    next_index = max((q.order_index for q in qs.questions), default=-1) + 1
+
+    pq = ProfilingQuestion(
+        question_set_id=qs.id,
+        order_index=body.order_index if body.order_index else next_index,
+        text=body.text,
+        type=body.type,
+        expected_answer=body.expected_answer,
+        positive_keywords=body.positive_keywords or [],
+        risk_keywords=body.risk_keywords or [],
+        weight=body.weight,
+        is_critical=body.is_critical,
+        eval_criteria=body.eval_criteria,
+    )
+    db.add(pq)
+    await db.commit()
+    await db.refresh(pq)
+    return _serialize_question(pq)
+
+
+@router.patch("/{question_set_id}/questions/{question_id}")
+async def update_question(
+    question_set_id: uuid.UUID,
+    question_id: uuid.UUID,
+    body: UpdateQuestionRequest,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    result = await db.execute(
+        select(ProfilingQuestion).where(
+            ProfilingQuestion.id == question_id,
+            ProfilingQuestion.question_set_id == question_set_id,
+        )
+    )
+    pq: ProfilingQuestion | None = result.scalar_one_or_none()
+    if not pq:
+        raise NotFoundException("Pregunta no encontrada")
+
+    if body.order_index is not None:
+        pq.order_index = body.order_index
+    if body.text is not None:
+        pq.text = body.text
+    if body.type is not None:
+        if body.type not in VALID_QUESTION_TYPES:
+            raise BusinessRuleException(
+                f"Tipo de pregunta inválido: '{body.type}'. Valores válidos: {sorted(VALID_QUESTION_TYPES)}"
+            )
+        pq.type = body.type
+    if body.expected_answer is not None:
+        pq.expected_answer = body.expected_answer
+    if body.positive_keywords is not None:
+        pq.positive_keywords = body.positive_keywords
+    if body.risk_keywords is not None:
+        pq.risk_keywords = body.risk_keywords
+    if body.weight is not None:
+        pq.weight = body.weight
+    if body.is_critical is not None:
+        pq.is_critical = body.is_critical
+    if body.eval_criteria is not None:
+        pq.eval_criteria = body.eval_criteria
+
+    await db.commit()
+    await db.refresh(pq)
+    return _serialize_question(pq)
+
+
+@router.delete("/{question_set_id}/questions/{question_id}", status_code=204)
+async def delete_question(
+    question_set_id: uuid.UUID,
+    question_id: uuid.UUID,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    result = await db.execute(
+        select(ProfilingQuestion).where(
+            ProfilingQuestion.id == question_id,
+            ProfilingQuestion.question_set_id == question_set_id,
+        )
+    )
+    pq: ProfilingQuestion | None = result.scalar_one_or_none()
+    if not pq:
+        raise NotFoundException("Pregunta no encontrada")
+    await db.delete(pq)
+    await db.commit()

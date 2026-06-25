@@ -1,6 +1,10 @@
+import io
 import uuid
 
-from fastapi import APIRouter, Depends
+import fitz  # pymupdf
+from docx import Document as DocxDocument
+from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +19,36 @@ from src.infrastructure.db.models import (
     ProcessStatus,
     User,
 )
+from src.infrastructure.storage import r2_client
+
+
+# ---------------------------------------------------------------------------
+# Text extraction helpers
+# ---------------------------------------------------------------------------
+
+def _extract_text_from_pdf(data: bytes) -> str:
+    doc = fitz.open(stream=data, filetype="pdf")
+    parts = [page.get_text() for page in doc]
+    doc.close()
+    return "\n".join(parts).strip()
+
+
+def _extract_text_from_docx(data: bytes) -> str:
+    doc = DocxDocument(io.BytesIO(data))
+    return "\n".join(p.text for p in doc.paragraphs if p.text.strip()).strip()
+
+
+def _extract_text(data: bytes, filename: str) -> str:
+    ext = filename.rsplit(".", 1)[-1].lower()
+    if ext == "pdf":
+        return _extract_text_from_pdf(data)
+    if ext in ("docx", "doc"):
+        return _extract_text_from_docx(data)
+    if ext == "txt":
+        return data.decode("utf-8", errors="replace").strip()
+    raise BusinessRuleException(
+        f"Formato '{ext}' no soportado. Usa PDF, DOCX o TXT."
+    )
 
 router = APIRouter(prefix="/processes", tags=["Processes"])
 
@@ -143,6 +177,9 @@ async def get_process(
             "jd_id": str(active_jd.id),
             "version": active_jd.version,
             "text_preview": active_jd.jd_raw_text[:300] + "..." if len(active_jd.jd_raw_text) > 300 else active_jd.jd_raw_text,
+            "jd_raw_text": active_jd.jd_raw_text,
+            "jd_file_url": (active_jd.structured_jd or {}).get("jd_file_url"),
+            "original_filename": (active_jd.structured_jd or {}).get("original_filename"),
             "created_at": active_jd.created_at.isoformat(),
         } if active_jd else None,
         "created_at": process.created_at.isoformat(),
@@ -189,3 +226,98 @@ async def create_job_description(
         "version": jd.version,
         "created_at": jd.created_at.isoformat(),
     }
+
+
+@router.post("/{process_id}/job-description/upload", status_code=201)
+async def upload_job_description_file(
+    process_id: uuid.UUID,
+    file: UploadFile = File(...),
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Sube un archivo PDF/DOCX/TXT como JD, extrae el texto y lo guarda en R2."""
+    MAX_SIZE = 10 * 1024 * 1024  # 10 MB
+    content = await file.read()
+    if len(content) > MAX_SIZE:
+        raise BusinessRuleException("El archivo supera el límite de 10 MB")
+
+    filename = file.filename or "job_description.pdf"
+    raw_text = _extract_text(content, filename)
+    if not raw_text:
+        raise BusinessRuleException(
+            "No se pudo extraer texto del archivo. Verifica que el PDF no sea una imagen escaneada."
+        )
+
+    result = await db.execute(
+        select(HiringProcess)
+        .where(HiringProcess.id == process_id)
+        .options(selectinload(HiringProcess.job_descriptions))
+    )
+    process: HiringProcess | None = result.scalar_one_or_none()
+    if not process:
+        raise NotFoundException("Proceso no encontrado")
+    if process.status in (ProcessStatus.CLOSED.value, ProcessStatus.ARCHIVED.value):
+        raise BusinessRuleException("RB-009: Proceso cerrado o archivado")
+
+    next_version = max((jd.version for jd in process.job_descriptions), default=0) + 1
+
+    # Guardamos en R2 antes de crear el registro para tener el id
+    jd_id = uuid.uuid4()
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "pdf"
+    r2_key = f"jds/{process_id}/{jd_id}.{ext}"
+    content_type_map = {"pdf": "application/pdf", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "txt": "text/plain"}
+    await r2_client.upload_file(r2_key, content, content_type_map.get(ext, "application/octet-stream"))
+
+    jd = JobDescription(
+        id=jd_id,
+        process_id=process_id,
+        version=next_version,
+        jd_raw_text=raw_text,
+        structured_jd={
+            "version": next_version,
+            "raw": raw_text,
+            "jd_file_url": r2_key,
+            "original_filename": filename,
+        },
+    )
+    db.add(jd)
+    await db.commit()
+    await db.refresh(jd)
+
+    return {
+        "jd_id": str(jd.id),
+        "process_id": str(process_id),
+        "version": jd.version,
+        "jd_file_url": r2_key,
+        "original_filename": filename,
+        "text_length": len(raw_text),
+        "created_at": jd.created_at.isoformat(),
+    }
+
+
+@router.get("/{process_id}/job-description/file")
+async def get_job_description_file(
+    process_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> RedirectResponse:
+    """Genera una URL firmada (1 h) para descargar el archivo de la JD activa."""
+    result = await db.execute(
+        select(HiringProcess)
+        .where(HiringProcess.id == process_id)
+        .options(selectinload(HiringProcess.job_descriptions))
+    )
+    process: HiringProcess | None = result.scalar_one_or_none()
+    if not process:
+        raise NotFoundException("Proceso no encontrado")
+
+    active_jd = max(process.job_descriptions, key=lambda j: j.version, default=None)
+    if not active_jd:
+        raise NotFoundException("No hay Job Description guardada para este proceso")
+
+    r2_key = (active_jd.structured_jd or {}).get("jd_file_url")
+    if not r2_key:
+        raise NotFoundException("Esta JD no tiene archivo adjunto, solo texto.")
+
+    presigned = await r2_client.generate_presigned_url(r2_key, expires_in=3600)
+    return RedirectResponse(url=presigned, status_code=302)
