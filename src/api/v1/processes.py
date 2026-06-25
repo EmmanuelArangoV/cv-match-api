@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.api.deps import RequireRecruiter, RequireTALeader, get_current_user
+from src.api.deps import RequireRecruiter, RequireRecruiterWithQuery, RequireTALeader, get_current_user
 from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
 from src.infrastructure.db.database import get_db
 from src.infrastructure.db.models import (
@@ -298,7 +298,7 @@ async def upload_job_description_file(
 @router.get("/{process_id}/job-description/file")
 async def get_job_description_file(
     process_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = RequireRecruiterWithQuery,
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
     """Genera una URL firmada (1 h) para descargar el archivo de la JD activa."""

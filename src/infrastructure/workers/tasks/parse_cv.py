@@ -1,12 +1,16 @@
 """
-Tarea Celery: descarga el CV de R2, lo parsea con gpt-4o vision,
-genera el PDF normalizado en estilo BBLABS y los sube a R2.
+Tarea Celery: descarga el CV de R2, extrae el contenido según el tipo de archivo
+(PDF → imágenes vía PyMuPDF, DOCX → texto + imágenes embebidas, imágenes → directo),
+llama a gpt-4o vision para extraer el perfil estructurado, genera el PDF normalizado
+en estilo BBLABS y lo sube a R2.
 """
 from __future__ import annotations
 
 import base64
+import io
 import json
 import uuid
+import zipfile
 
 import pymupdf as fitz  # PyMuPDF >= 1.24
 from openai import OpenAI
@@ -22,35 +26,121 @@ from src.infrastructure.workers.celery_app import celery_app
 _engine = create_engine(settings.database_url_sync)
 _SyncSession = sessionmaker(bind=_engine)
 
+_INPUT_COST = 0.0000025
+_OUTPUT_COST = 0.000010
+
+# Extensiones reconocidas como imágenes directas
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".tiff", ".tif", ".bmp"}
+_IMAGE_MIME = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".png": "image/png", ".webp": "image/webp",
+    ".gif": "image/gif", ".tiff": "image/tiff", ".tif": "image/tiff",
+    ".bmp": "image/bmp",
+}
+
 
 def _get_openai() -> OpenAI:
     return OpenAI(api_key=settings.openai_api_key)
 
-# Costo estimado gpt-4o (USD por token)
-_INPUT_COST = 0.0000025
-_OUTPUT_COST = 0.000010
 
+# ─── Extractores por formato ───────────────────────────────────────────────────
 
-def _pdf_to_images(pdf_bytes: bytes) -> list[str]:
-    """Convierte cada página del PDF a PNG en base64."""
+def _pdf_to_content(pdf_bytes: bytes) -> list[dict]:
+    """Convierte cada página del PDF a un bloque image_url para la API de visión."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    images: list[str] = []
+    items: list[dict] = []
     for page in doc:
-        mat = fitz.Matrix(2.0, 2.0)  # zoom 2x para mejor calidad
+        mat = fitz.Matrix(2.0, 2.0)  # zoom 2× para mejor resolución
         pix = page.get_pixmap(matrix=mat)
-        images.append(base64.b64encode(pix.tobytes("png")).decode())
-    doc.close()
-    return images
-
-
-def _call_openai(images_b64: list[str], client: OpenAI) -> tuple[dict, int, int]:
-    """Llama a gpt-4o vision y retorna (resultado_json, tokens_in, tokens_out)."""
-    content: list[dict] = [{"type": "text", "text": CV_EXTRACTION_PROMPT}]
-    for b64 in images_b64:
-        content.append({
+        b64 = base64.b64encode(pix.tobytes("png")).decode()
+        items.append({
             "type": "image_url",
             "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"},
         })
+    doc.close()
+    return items
+
+
+def _docx_to_content(docx_bytes: bytes) -> list[dict]:
+    """
+    Extrae texto e imágenes embebidas de un DOCX.
+    Devuelve bloques listos para la API de OpenAI:
+      - un bloque 'text' con todo el texto plano del documento
+      - un bloque 'image_url' por cada imagen embebida (hasta 10)
+    """
+    from docx import Document  # python-docx
+
+    doc = Document(io.BytesIO(docx_bytes))
+    items: list[dict] = []
+
+    # ── Texto plano ──────────────────────────────────────────────────────────
+    lines: list[str] = []
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if text:
+            lines.append(text)
+    for table in doc.tables:
+        for row in table.rows:
+            row_text = " | ".join(c.text.strip() for c in row.cells if c.text.strip())
+            if row_text:
+                lines.append(row_text)
+
+    if lines:
+        items.append({"type": "text", "text": "DOCUMENTO (texto extraído):\n" + "\n".join(lines)})
+
+    # ── Imágenes embebidas en el zip del DOCX ────────────────────────────────
+    try:
+        with zipfile.ZipFile(io.BytesIO(docx_bytes)) as z:
+            media = [
+                n for n in z.namelist()
+                if n.startswith("word/media/") and not n.endswith("/")
+            ]
+            for name in media[:10]:  # limitamos a 10 imágenes por documento
+                ext = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
+                mime = _IMAGE_MIME.get(ext)
+                if not mime:
+                    continue
+                b64 = base64.b64encode(z.read(name)).decode()
+                items.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
+                })
+    except Exception:
+        pass  # si falla la extracción de imágenes, continuamos solo con texto
+
+    return items
+
+
+def _image_to_content(image_bytes: bytes, ext: str) -> list[dict]:
+    """Encoda una imagen directamente como bloque image_url."""
+    mime = _IMAGE_MIME.get(ext, "image/jpeg")
+    b64 = base64.b64encode(image_bytes).decode()
+    return [{
+        "type": "image_url",
+        "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
+    }]
+
+
+def _prepare_content(file_bytes: bytes, r2_key: str) -> list[dict]:
+    """Devuelve la lista de bloques de contenido según el tipo de archivo."""
+    ext = ""
+    if "." in r2_key:
+        ext = "." + r2_key.rsplit(".", 1)[-1].lower()
+
+    if ext == ".docx" or ext == ".doc":
+        return _docx_to_content(file_bytes)
+    if ext in _IMAGE_EXTS:
+        return _image_to_content(file_bytes, ext)
+    # Por defecto (PDF u otros): intentar como PDF
+    return _pdf_to_content(file_bytes)
+
+
+# ─── Llamada a OpenAI ──────────────────────────────────────────────────────────
+
+def _call_openai(content_blocks: list[dict], client: OpenAI) -> tuple[dict, int, int]:
+    """Llama a gpt-4o con el prompt de extracción + los bloques de contenido."""
+    content: list[dict] = [{"type": "text", "text": CV_EXTRACTION_PROMPT}]
+    content.extend(content_blocks)
 
     response = client.chat.completions.create(
         model="gpt-4o",
@@ -62,6 +152,8 @@ def _call_openai(images_b64: list[str], client: OpenAI) -> tuple[dict, int, int]
     result = json.loads(response.choices[0].message.content)
     return result, response.usage.prompt_tokens, response.usage.completion_tokens
 
+
+# ─── Tarea Celery ──────────────────────────────────────────────────────────────
 
 @celery_app.task(
     bind=True,
@@ -99,14 +191,19 @@ def parse_cv(
             pc.status = CandidateStatus.CV_PROCESSING.value
             db.commit()
 
-            # Descargar PDF de R2
-            pdf_bytes = download_file_sync(candidate.cv_file_url)
+            # Descargar el archivo de R2
+            file_bytes = download_file_sync(candidate.cv_file_url)
 
-            # Convertir a imágenes
-            images_b64 = _pdf_to_images(pdf_bytes)
+            # Preparar bloques de contenido según el tipo de archivo
+            content_blocks = _prepare_content(file_bytes, candidate.cv_file_url)
+
+            if not content_blocks:
+                raise ValueError(
+                    f"No se pudo extraer contenido del archivo: {candidate.cv_file_url}"
+                )
 
             # Llamar a OpenAI
-            extracted, tokens_in, tokens_out = _call_openai(images_b64, _get_openai())
+            extracted, tokens_in, tokens_out = _call_openai(content_blocks, _get_openai())
 
             # Actualizar candidato con datos extraídos
             candidate.extracted_profile = extracted
@@ -129,10 +226,10 @@ def parse_cv(
 
             # Generar PDF normalizado en estilo BBLABS y subirlo a R2
             normalized_pdf_bytes = render_normalized_cv(extracted)
-            # Construye la key derivando de la original, ej: cvs/abc123.pdf → cvs/abc123_normalized.pdf
             original_key = candidate.cv_file_url
-            if original_key.endswith(".pdf"):
-                normalized_key = original_key[:-4] + "_normalized.pdf"
+            # Genera siempre una key _normalized.pdf independientemente de la extensión original
+            if "." in original_key.rsplit("/", 1)[-1]:
+                normalized_key = original_key.rsplit(".", 1)[0] + "_normalized.pdf"
             else:
                 normalized_key = original_key + "_normalized.pdf"
             upload_file_sync(normalized_key, normalized_pdf_bytes, "application/pdf")
@@ -155,6 +252,13 @@ def parse_cv(
             db.add(cost_log)
             db.commit()
 
+            # Disparar automáticamente la tarea de match
+            from src.infrastructure.workers.tasks.run_match import run_match
+            run_match.delay(
+                process_candidate_id=process_candidate_id,
+                process_id=process_id,
+            )
+
             # Disparar tarea de WhatsApp solo si las credenciales están configuradas
             if settings.meta_whatsapp_access_token and settings.meta_whatsapp_phone_number_id:
                 from src.infrastructure.workers.tasks.whatsapp import send_whatsapp_consent
@@ -170,7 +274,6 @@ def parse_cv(
 
         except Exception as exc:
             db.rollback()
-            # Marcar como error para reintento
             try:
                 pc = db.get(ProcessCandidate, pc_uuid)
                 if pc:

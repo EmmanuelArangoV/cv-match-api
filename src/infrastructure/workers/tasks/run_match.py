@@ -89,10 +89,21 @@ def run_match(
             if not pc:
                 return {"error": "ProcessCandidate not found"}
 
+            # Guard against double-dispatch (auto from parse_cv + manual UI trigger)
+            if pc.status not in (CandidateStatus.MATCH_PENDING.value,):
+                return {"skipped": f"Candidate already in status {pc.status}"}
+
+            # Claim immediately so a concurrent bulk trigger skips this candidate
+            pc.status = CandidateStatus.MATCH_PROCESSING.value
+            db.flush()
+            db.commit()
+
             candidate = pc.candidate
 
             # RB-002: CV debe estar procesado
             if not candidate.normalized_cv:
+                pc.status = CandidateStatus.MATCH_PENDING.value
+                db.commit()
                 return {"error": "CV not yet processed — normalized_cv is empty"}
 
             # Cargar proceso con JD activa (la de mayor versión)
@@ -104,6 +115,11 @@ def run_match(
 
             if not process:
                 return {"error": "Process not found"}
+
+            # Cambiar a MATCH_PROCESSING al iniciar el match
+            if process.status in (ProcessStatus.CVS_UPLOADED.value, ProcessStatus.MATCH_DONE.value, ProcessStatus.PROFILING_CONFIGURED.value):
+                process.status = ProcessStatus.MATCH_PROCESSING.value
+                db.flush()
 
             # RB-001: debe existir una JD
             jds = sorted(process.job_descriptions, key=lambda j: j.version, reverse=True)
