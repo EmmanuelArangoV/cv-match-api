@@ -66,8 +66,9 @@ async def receive_whatsapp_message(
     """Recibe mensajes y clics de botón de WhatsApp, valida firma HMAC de Meta."""
     raw_body = await request.body()
 
-    if not _verify_meta_signature(raw_body, request.headers.get("X-Hub-Signature-256")):
-        raise HTTPException(status_code=403, detail="Firma HMAC inválida")
+    if settings.app_env != "development":
+        if not _verify_meta_signature(raw_body, request.headers.get("X-Hub-Signature-256")):
+            raise HTTPException(status_code=403, detail="Firma HMAC inválida")
 
     body = await request.json()
 

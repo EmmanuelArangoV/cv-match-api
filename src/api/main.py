@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from src.api.v1 import auth, candidates, match, processes, webhooks
+from src.api.v1 import auth, candidates, debug, match, processes, question_sets, webhooks
 from src.config import settings
 from src.domain.shared.exceptions import (
     BusinessRuleException,
@@ -67,6 +67,10 @@ app.include_router(processes.router, prefix="/api/v1")
 app.include_router(candidates.router, prefix="/api/v1")
 app.include_router(webhooks.router, prefix="/api/v1")
 app.include_router(match.router, prefix="/api/v1")
+app.include_router(question_sets.router, prefix="/api/v1")
+
+if not settings.is_production:
+    app.include_router(debug.router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["Health"])

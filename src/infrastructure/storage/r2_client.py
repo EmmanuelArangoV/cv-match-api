@@ -56,3 +56,16 @@ def download_file_sync(key: str) -> bytes:
 def upload_file_sync(key: str, data: bytes, content_type: str = "application/pdf") -> str:
     _upload_sync(key, data, content_type)
     return key
+
+
+def _presigned_url_sync(key: str, expires_in: int) -> str:
+    return _get_client().generate_presigned_url(
+        "get_object",
+        Params={"Bucket": settings.r2_bucket_name, "Key": key},
+        ExpiresIn=expires_in,
+    )
+
+
+async def generate_presigned_url(key: str, expires_in: int = 3600) -> str:
+    """Returns a time-limited URL to download a private R2 object."""
+    return await asyncio.to_thread(partial(_presigned_url_sync, key, expires_in))
