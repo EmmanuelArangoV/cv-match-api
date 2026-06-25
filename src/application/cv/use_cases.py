@@ -22,8 +22,23 @@ from src.infrastructure.storage import r2_client
 from src.infrastructure.workers.tasks.parse_cv import parse_cv
 from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
 
-_ALLOWED_TYPES = {"application/pdf", "application/octet-stream"}
-_ALLOWED_EXTENSIONS = {".pdf"}
+_ALLOWED_EXTENSIONS = {
+    ".pdf",
+    ".docx", ".doc",
+    ".jpg", ".jpeg", ".png", ".webp", ".tiff", ".tif", ".bmp",
+}
+_CONTENT_TYPES: dict[str, str] = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".doc": "application/msword",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".tiff": "image/tiff",
+    ".tif": "image/tiff",
+    ".bmp": "image/bmp",
+}
 _MAX_FILE_MB = 10
 
 
@@ -73,7 +88,8 @@ class UploadCVsUseCase:
             ext = "." + file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
             if ext not in _ALLOWED_EXTENSIONS:
                 raise BusinessRuleException(
-                    f"Formato no permitido: {file.filename}. Solo se aceptan PDFs."
+                    f"Formato no permitido: {file.filename}. "
+                    f"Se aceptan: PDF, DOCX, JPG, PNG, WEBP."
                 )
 
             content = await file.read()
@@ -87,8 +103,9 @@ class UploadCVsUseCase:
             candidate_id = uuid.uuid4()
             r2_key = f"cvs/{process_id}/{candidate_id}/{file.filename}"
 
-            # Subir a R2
-            await r2_client.upload_file(r2_key, content, "application/pdf")
+            # Subir a R2 con el content-type correcto
+            content_type = _CONTENT_TYPES.get(ext, "application/octet-stream")
+            await r2_client.upload_file(r2_key, content, content_type)
 
             # Crear registro Candidate con placeholders
             filename_stem = file.filename.rsplit(".", 1)[0]
