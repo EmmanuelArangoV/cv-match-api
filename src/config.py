@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     meta_whatsapp_access_token: str = ""
     meta_whatsapp_verify_token: str = ""
     meta_whatsapp_webhook_secret: str = ""
+    whatsapp_template_fallback_enabled: bool = False
 
     # Business rules
     max_concurrent_calls: int = 4

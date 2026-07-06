@@ -18,8 +18,8 @@ from src.infrastructure.db.models import (
 from src.infrastructure.messaging.whatsapp_client import whatsapp_client
 
 # Títulos exactos de los botones de la plantilla aprobada por Meta
-_BUTTON_ACCEPT = "sí, acepto"
-_BUTTON_REJECT = "no, gracias"
+_BUTTON_ACCEPT = "autorizo llamada"
+_BUTTON_REJECT = "no estoy interesado"
 
 
 def _resolve_button_intent(text: str) -> str | None:
