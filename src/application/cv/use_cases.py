@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from fastapi import UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
+import hashlib
 
 from src.config import settings
 from src.domain.hiring_process.rules import HiringProcessRules
@@ -62,6 +63,8 @@ class UploadCVsUseCase:
         files: list[UploadFile],
         uploader_id: uuid.UUID,
     ) -> list[UploadResult]:
+        import asyncio
+
         process = await self._process_repo.find_by_id(process_id)
         if not process:
             raise NotFoundException("HiringProcess", str(process_id))
@@ -79,8 +82,7 @@ class UploadCVsUseCase:
                 f"Se superaría el límite de {settings.cv_batch_limit} CVs por proceso."
             )
 
-        results: list[UploadResult] = []
-
+        valid_files = []
         for file in files:
             if not file.filename:
                 continue
@@ -99,52 +101,106 @@ class UploadCVsUseCase:
                     f"El archivo {file.filename} supera el límite de {_MAX_FILE_MB}MB."
                 )
 
-            # Generar key único en R2
-            candidate_id = uuid.uuid4()
-            r2_key = f"cvs/{process_id}/{candidate_id}/{file.filename}"
+            valid_files.append((file, ext, content))
 
-            # Subir a R2 con el content-type correcto
-            content_type = _CONTENT_TYPES.get(ext, "application/octet-stream")
-            await r2_client.upload_file(r2_key, content, content_type)
+        upload_tasks = []
+        file_meta = []
+        # Para deduplicar de forma síncrona/batch, pre-calculamos hashes
+        for file, ext, content in valid_files:
+            file_hash = hashlib.sha256(content).hexdigest()
+            file_meta.append((file.filename, ext, content, file_hash))
 
-            # Crear registro Candidate con placeholders
-            filename_stem = file.filename.rsplit(".", 1)[0]
-            candidate = Candidate(
-                id=candidate_id,
-                name="Procesando",
-                last_name=filename_stem[:100],
-                email=f"pending_{candidate_id}@placeholder.riwi",
-                cv_file_url=r2_key,
-            )
-            await self._candidate_repo.save_candidate(candidate)
+        results: list[UploadResult] = []
+        
+        for filename, ext, content, file_hash in file_meta:
+            existing_candidate = await self._candidate_repo.find_by_cv_file_hash(file_hash)
+            
+            if existing_candidate:
+                # El CV ya existe. Verificamos si ya está en este proceso.
+                existing_pc = await self._candidate_repo.find_process_candidate(process_id, existing_candidate.id)
+                if existing_pc:
+                    results.append(UploadResult(
+                        candidate_id=existing_candidate.id,
+                        process_candidate_id=existing_pc.id,
+                        filename=filename,
+                        task_id="already_exists"
+                    ))
+                    continue
+                
+                # Crear nuevo ProcessCandidate vinculado al candidato existente
+                pc = ProcessCandidate(
+                    process_id=process_id,
+                    candidate_id=existing_candidate.id,
+                    status=CandidateStatus.MATCH_PENDING.value,
+                    whatsapp_consent_status=WhatsAppConsentStatus.PENDING.value,
+                )
+                await self._candidate_repo.save_process_candidate(pc)
+                
+                if process.status == ProcessStatus.DRAFT.value:
+                    process.status = ProcessStatus.CVS_UPLOADED.value
+                await self._db.flush()
+                
+                # Ejecutar match inmediatamente (ya tenemos la normalización)
+                from src.infrastructure.workers.tasks.run_match import run_match
+                task = run_match.delay(
+                    process_candidate_id=str(pc.id),
+                    process_id=str(process_id),
+                )
+                
+                results.append(UploadResult(
+                    candidate_id=existing_candidate.id,
+                    process_candidate_id=pc.id,
+                    filename=filename,
+                    task_id=task.id,
+                ))
+            else:
+                # Candidato nuevo
+                candidate_id = uuid.uuid4()
+                r2_key = f"cvs/{process_id}/{candidate_id}/{filename}"
+                content_type = _CONTENT_TYPES.get(ext, "application/octet-stream")
+                
+                upload_tasks.append(r2_client.upload_file(r2_key, content, content_type))
+                
+                filename_stem = filename.rsplit(".", 1)[0]
+                candidate = Candidate(
+                    id=candidate_id,
+                    name="Procesando",
+                    last_name=filename_stem[:100],
+                    email=f"pending_{candidate_id}@placeholder.riwi",
+                    cv_file_url=r2_key,
+                    cv_file_hash=file_hash,
+                )
+                await self._candidate_repo.save_candidate(candidate)
 
-            # Crear ProcessCandidate
-            pc = ProcessCandidate(
-                process_id=process_id,
-                candidate_id=candidate_id,
-                status=CandidateStatus.LOADED.value,
-                whatsapp_consent_status=WhatsAppConsentStatus.PENDING.value,
-            )
-            await self._candidate_repo.save_process_candidate(pc)
+                pc = ProcessCandidate(
+                    process_id=process_id,
+                    candidate_id=candidate_id,
+                    status=CandidateStatus.LOADED.value,
+                    whatsapp_consent_status=WhatsAppConsentStatus.PENDING.value,
+                )
+                await self._candidate_repo.save_process_candidate(pc)
 
-            # Actualizar estado del proceso si estaba en DRAFT
-            if process.status == ProcessStatus.DRAFT.value:
-                process.status = ProcessStatus.CVS_UPLOADED.value
+                if process.status == ProcessStatus.DRAFT.value:
+                    process.status = ProcessStatus.CVS_UPLOADED.value
 
-            await self._db.flush()
+                await self._db.flush()
 
-            # Encolar tarea de parseo
-            task = parse_cv.delay(
-                str(candidate_id),
-                str(pc.id),
-                str(process_id),
-            )
+                task = parse_cv.delay(
+                    str(candidate_id),
+                    str(pc.id),
+                    str(process_id),
+                )
 
-            results.append(UploadResult(
-                candidate_id=candidate_id,
-                process_candidate_id=pc.id,
-                filename=file.filename,
-                task_id=task.id,
-            ))
+                results.append(UploadResult(
+                    candidate_id=candidate_id,
+                    process_candidate_id=pc.id,
+                    filename=filename,
+                    task_id=task.id,
+                ))
+
+        if upload_tasks:
+            await asyncio.gather(*upload_tasks)
 
         return results
+
+

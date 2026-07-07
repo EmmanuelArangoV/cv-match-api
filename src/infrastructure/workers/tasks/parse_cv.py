@@ -137,6 +137,14 @@ def _prepare_content(file_bytes: bytes, r2_key: str) -> list[dict]:
 
 # ─── Llamada a OpenAI ──────────────────────────────────────────────────────────
 
+def _get_embedding(text: str, client: OpenAI) -> list[float]:
+    """Genera un vector embedding para el texto dado."""
+    response = client.embeddings.create(
+        input=text,
+        model="text-embedding-3-small"
+    )
+    return response.data[0].embedding
+
 def _call_openai(content_blocks: list[dict], client: OpenAI) -> tuple[dict, int, int]:
     """Llama a gpt-4o con el prompt de extracción + los bloques de contenido."""
     content: list[dict] = [{"type": "text", "text": CV_EXTRACTION_PROMPT}]
@@ -203,11 +211,19 @@ def parse_cv(
                 )
 
             # Llamar a OpenAI
-            extracted, tokens_in, tokens_out = _call_openai(content_blocks, _get_openai())
+            openai_client = _get_openai()
+            extracted, tokens_in, tokens_out = _call_openai(content_blocks, openai_client)
 
             # Actualizar candidato con datos extraídos
             candidate.extracted_profile = extracted
             candidate.normalized_cv = extracted
+
+            # Generar Embedding para búsqueda semántica
+            try:
+                profile_text = json.dumps(extracted, ensure_ascii=False)
+                candidate.cv_embedding = _get_embedding(profile_text, openai_client)
+            except Exception:
+                pass  # Si falla el embedding, continuamos con el flujo normal
 
             # Actualizar campos básicos si OpenAI los devolvió
             full_name: str = extracted.get("full_name", "")
@@ -252,12 +268,19 @@ def parse_cv(
             db.add(cost_log)
             db.commit()
 
-            # Disparar automáticamente la tarea de match
-            from src.infrastructure.workers.tasks.run_match import run_match
-            run_match.delay(
-                process_candidate_id=process_candidate_id,
-                process_id=process_id,
-            )
+            # Disparar automáticamente la tarea de match de forma SÍNCRONA
+            from src.infrastructure.workers.tasks.run_match import execute_match, run_match
+            final_status = "MATCH_PENDING"
+            try:
+                match_res = execute_match(process_candidate_id, process_id)
+                final_status = match_res.get("status", "MATCH_PENDING")
+            except Exception:
+                # Si falla sincrónicamente, encolar para reintentos normales de match
+                run_match.delay(
+                    process_candidate_id=process_candidate_id,
+                    process_id=process_id,
+                )
+                final_status = "MATCH_PENDING (queued)"
 
             # Disparar tarea de WhatsApp solo si las credenciales están configuradas
             if settings.meta_whatsapp_access_token and settings.meta_whatsapp_phone_number_id:
@@ -266,7 +289,7 @@ def parse_cv(
 
             return {
                 "candidate_id": candidate_id,
-                "status": "MATCH_PENDING",
+                "status": final_status,
                 "tokens_in": tokens_in,
                 "tokens_out": tokens_out,
                 "estimated_cost_usd": round(estimated_cost, 6),
