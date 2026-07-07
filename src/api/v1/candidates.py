@@ -9,9 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import RequireRecruiter, RequireRecruiterWithQuery, get_current_user
 from src.application.cv.use_cases import UploadCVsUseCase
-from src.domain.shared.exceptions import NotFoundException
+from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
 from src.infrastructure.db.database import get_db
-from src.infrastructure.db.models import User
+from src.infrastructure.db.models import User, WhatsAppConsentStatus
 from src.infrastructure.db.repositories.candidate_repository import CandidateRepository
 from src.infrastructure.storage import r2_client
 
@@ -184,6 +184,42 @@ async def get_candidate_cv_file(
 
     presigned = await r2_client.generate_presigned_url(r2_key, expires_in=3600)
     return RedirectResponse(url=presigned, status_code=302)
+
+
+@router.post("/{process_id}/candidates/{process_candidate_id}/whatsapp/send")
+async def send_candidate_whatsapp(
+    process_id: uuid.UUID,
+    process_candidate_id: uuid.UUID,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Dispara (o reenvía) manualmente la plantilla de consentimiento de WhatsApp."""
+    from src.infrastructure.workers.tasks.whatsapp import send_whatsapp_consent
+
+    repo = CandidateRepository(db)
+    pc = await repo.find_process_candidate_by_id(process_candidate_id)
+
+    if not pc or pc.process_id != process_id:
+        raise NotFoundException("Candidato no encontrado en este proceso")
+
+    if not pc.candidate.phone:
+        raise BusinessRuleException("Este candidato no tiene teléfono registrado")
+
+    if pc.whatsapp_consent_status in (
+        WhatsAppConsentStatus.ACCEPTED.value,
+        WhatsAppConsentStatus.REJECTED.value,
+    ):
+        raise BusinessRuleException(
+            f"El candidato ya respondió ({pc.whatsapp_consent_status}), no se puede reenviar"
+        )
+
+    task = send_whatsapp_consent.delay(str(pc.id))
+
+    return {
+        "process_candidate_id": str(pc.id),
+        "task_id": task.id,
+        "status": "queued",
+    }
 
 
 @router.get("/{process_id}/candidates/{process_candidate_id}/cv-normalized/file")

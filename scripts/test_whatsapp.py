@@ -60,12 +60,14 @@ async def test_whatsapp(phone_number: str):
         await session.commit()
         print(f"Datos de prueba creados en BD. ProcessCandidate ID: {pc_id}")
 
-        # 4. Enviar el mensaje inicial usando el cliente directamente (para no depender de Celery aquí)
-        print(f"Enviando plantilla a {phone_number}...")
-        res = await whatsapp_client.send_template_message(
+        # 4. Enviar la plantilla real aprobada (autorizacion_llamada_ia_v2)
+        # usando el cliente directamente, para no depender de Celery aquí.
+        candidate_name = f"{candidate.name} {candidate.last_name}".strip()
+        print(f"Enviando plantilla 'autorizacion_llamada_ia_v2' a {phone_number}...")
+        res = await whatsapp_client.send_consent_template(
             to_phone=phone_number,
-            template_name="hello_world",
-            language_code="en_US"
+            candidate_name=candidate_name,
+            job_title=process.job_title,
         )
         print(f"Mensaje enviado! Respuesta de Meta: {res}")
         print("\n¡Revisa tu celular! Cuando respondas el mensaje, el webhook de Ngrok lo recibirá y OpenAI te contestará.")

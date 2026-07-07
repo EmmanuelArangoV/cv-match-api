@@ -17,30 +17,40 @@ class WhatsAppClient:
         self,
         to_phone: str,
         candidate_name: str,
-        job_title: str,
+        job_title: str = "",
     ) -> dict:
         """
         Envía la plantilla de consentimiento aprobada por Meta.
-        Nombre en Meta Business: 'consentimiento_entrevista_voz'
-        Variables: {{1}} = nombre candidato, {{2}} = cargo
+        Nombre en Meta Business: 'autorizacion_llamada_ia_v2'
+        Variables: {{1}} = nombre candidato
+
+        Mientras Meta no haya aprobado la plantilla, si
+        WHATSAPP_TEMPLATE_FALLBACK_ENABLED=true en el .env, se envía en su
+        lugar 'hello_world' (plantilla de muestra que Meta aprueba
+        automáticamente en toda cuenta) para poder probar el resto del flujo
+        (webhook + agente de IA) sin quedar bloqueados por la revisión.
         """
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": to_phone,
-            "type": "template",
-            "template": {
-                "name": "consentimiento_entrevista",
-                "language": {"code": "es"},
+        if settings.whatsapp_template_fallback_enabled:
+            template = {"name": "hello_world", "language": {"code": "en_US"}}
+        else:
+            template = {
+                "name": "autorizacion_llamada_ia_v2",
+                "language": {"code": "es_CO"},
                 "components": [
                     {
                         "type": "body",
                         "parameters": [
                             {"type": "text", "text": candidate_name},
-                            {"type": "text", "text": job_title},
                         ],
                     }
                 ],
-            },
+            }
+
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to_phone,
+            "type": "template",
+            "template": template,
         }
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.post(self._base_url + "/messages", headers=self._headers, json=payload)
