@@ -232,3 +232,43 @@ def build_match_messages(
         {"role": "system", "content": _MATCH_SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
     ]
+
+
+# ---------------------------------------------------------------------------
+# POST-PROFILING EVALUATION
+# ---------------------------------------------------------------------------
+
+PROFILING_EVALUATION_PROMPT = """\
+You are an expert HR talent evaluator. Your task is to evaluate a candidate's \
+interview transcript against a set of profiling questions and criteria.
+
+For each question in the question set, you will evaluate the candidate's answer \
+found in the transcript. You must detect any positive or risk keywords, provide \
+a confidence score, and determine if human review is required (e.g. evasive \
+answer, controversial topic).
+
+Finally, you must determine the candidate's `advancement_probability` based on \
+business rules:
+- If >= 2 critical questions are failed, probability is LOW.
+- If 1 critical question is failed, probability is MEDIUM at most.
+- Otherwise, rate HIGH, MEDIUM, or LOW based on the overall quality of answers.
+
+Return ONLY valid JSON with exactly this schema:
+
+{
+  "answers": [
+    {
+      "question_id": "<uuid from input>",
+      "transcription_snippet": "<the exact part of the transcript corresponding to this answer>",
+      "normalized_answer": "<summary of what the candidate said>",
+      "evaluation_result": "<pass, fail, or neutral>",
+      "detected_keywords": ["<string>"],
+      "confidence_score": <number 0.0 to 1.0>,
+      "requires_review": <boolean>
+    }
+  ],
+  "advancement_probability": "<HIGH | MEDIUM | LOW>",
+  "advancement_explanation": "<string explaining the probability choice>"
+}
+
+"""

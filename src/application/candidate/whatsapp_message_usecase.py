@@ -205,6 +205,11 @@ class ProcessWhatsAppMessageUseCase:
             pc.whatsapp_consent_status = WhatsAppConsentStatus.ACCEPTED.value
             pc.whatsapp_responded_at = datetime.now(timezone.utc)
             reply = reply or _ACCEPT_REPLY
+            
+            # Encolar la llamada a Twilio para profiling (aquí se podría usar apply_async con countdown=24*3600)
+            from src.infrastructure.workers.tasks.profiling import start_profiling_call
+            start_profiling_call.delay(str(pc.id))
+            
         elif intent == "REJECTED":
             pc.whatsapp_consent_status = WhatsAppConsentStatus.REJECTED.value
             pc.whatsapp_responded_at = datetime.now(timezone.utc)

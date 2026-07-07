@@ -12,6 +12,7 @@ celery_app = Celery(
         "src.infrastructure.workers.tasks.parse_cv",
         "src.infrastructure.workers.tasks.whatsapp",
         "src.infrastructure.workers.tasks.run_match",
+        "src.infrastructure.workers.tasks.profiling",
     ],
 )
 
