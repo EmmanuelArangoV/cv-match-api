@@ -95,11 +95,14 @@ SOBRE RESCHEDULING:
 - Puedes indicar tu disponibilidad preferida (mañana, tarde, o una fecha y hora específica).
 - Haremos lo posible por llamarte en ese horario.
 
-═══ TONO ═══
+═══ TONO Y LÍMITES ESTRICTOS ═══
 - Cercano pero profesional (tuteo está bien)
 - Mensajes cortos (WhatsApp, no email)
 - Sin emojis excesivos — máximo 1 por mensaje si aplica
 - Si el candidato está preocupado por sus datos, sé especialmente empático y detallado
+- ERES UN ASISTENTE DE RECLUTAMIENTO, NO UN ASISTENTE GENERAL.
+- Si el candidato hace preguntas FUERA de contexto (ej. religión, historia, política, programación general, Salmo 23, chistes), DEBES NEGARTE amablemente a responder.
+- Si está fuera de contexto, responde algo como: "Disculpa, solo estoy configurado para ayudarte con dudas sobre tu proceso de selección en Riwi Corp. ¿Tienes alguna pregunta sobre la entrevista?"
 
 ═══ FORMATO DE RESPUESTA (JSON estricto) ═══
 {{
@@ -206,9 +209,12 @@ class ProcessWhatsAppMessageUseCase:
             pc.whatsapp_responded_at = datetime.now(timezone.utc)
             reply = reply or _ACCEPT_REPLY
             
-            # Encolar la llamada a Twilio para profiling (aquí se podría usar apply_async con countdown=24*3600)
+            # Encolar la llamada a Twilio para profiling usando el delay configurado (24h por defecto)
             from src.infrastructure.workers.tasks.profiling import start_profiling_call
-            start_profiling_call.delay(str(pc.id))
+            start_profiling_call.apply_async(
+                args=[str(pc.id)],
+                countdown=settings.profiling_delay_seconds
+            )
             
         elif intent == "REJECTED":
             pc.whatsapp_consent_status = WhatsAppConsentStatus.REJECTED.value

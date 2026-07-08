@@ -2,7 +2,14 @@ import uuid
 import logging
 from datetime import datetime
 from celery import shared_task
-from src.infrastructure.db.database import _SyncSession
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from src.config import settings
+
+_engine = create_engine(settings.database_url_sync)
+_SyncSession = sessionmaker(bind=_engine)
+
 from src.infrastructure.db.models import (
     ProcessCandidate,
     CandidateStatus,

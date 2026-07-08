@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     max_concurrent_calls: int = 4
     whatsapp_consent_timeout_hours: int = 24
     cv_batch_limit: int = 50
+    profiling_delay_seconds: int = 86400  # Default 24h
 
     @property
     def is_production(self) -> bool:
