@@ -129,3 +129,20 @@ async def simulate_whatsapp_message(
     use_case = ProcessWhatsAppMessageUseCase(db)
     await use_case.execute(from_phone=body.from_phone, message_text=body.message)
     return {"ok": True, "from": body.from_phone, "message": body.message}
+
+
+@router.post("/trigger-profiling-call/{process_candidate_id}")
+async def trigger_profiling_call(
+    process_candidate_id: uuid.UUID,
+    _: None = Depends(_require_dev),
+) -> dict:
+    """
+    Dispara una llamada de profiling real para un ProcessCandidate existente, sin
+    tener que esperar el flujo completo de consentimiento por WhatsApp. Util para
+    probar Twilio/ElevenLabs de punta a punta en desarrollo (requiere PUBLIC_BASE_URL
+    apuntando a una URL publica real, ej. ngrok).
+    """
+    from src.infrastructure.workers.tasks.profiling import start_profiling_call
+
+    task = start_profiling_call.delay(str(process_candidate_id))
+    return {"ok": True, "task_id": task.id, "process_candidate_id": str(process_candidate_id)}

@@ -32,9 +32,21 @@ class Settings(BaseSettings):
     # OpenAI
     openai_api_key: str = ""
 
+    # Twilio (llamadas de profiling — AMD sincrono + registro en ElevenLabs)
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_from_number: str = ""
+    twilio_api_url: str = "https://api.twilio.com"
+    twilio_validate_signature: bool = True
+
     # ElevenLabs
     elevenlabs_api_key: str = ""
-    elevenlabs_webhook_secret: str = ""
+    elevenlabs_agent_id: str = ""
+    elevenlabs_base_url: str = ""  # override solo para tests (mock local); vacio en produccion
+    elevenlabs_webhook_secret_transcription: str = ""
+
+    # URL publica bajo la cual Twilio/ElevenLabs pueden alcanzar este backend (ngrok en dev)
+    public_base_url: str = ""
 
     # Meta WhatsApp Business
     meta_whatsapp_api_url: str = "https://graph.facebook.com/v21.0"
@@ -49,6 +61,14 @@ class Settings(BaseSettings):
     whatsapp_consent_timeout_hours: int = 24
     cv_batch_limit: int = 50
     profiling_delay_seconds: int = 86400  # Default 24h
+    max_call_attempts: int = 3
+    machine_detection_timeout: int = 10
+    twilio_ring_timeout_seconds: int = 25
+
+    # Watchdog de llamadas de profiling atascadas (ver check_stale_profiling_calls)
+    watchdog_interval_seconds: int = 120
+    stale_calling_timeout_seconds: int = 60
+    stale_answered_timeout_seconds: int = 900
 
     @property
     def is_production(self) -> bool:

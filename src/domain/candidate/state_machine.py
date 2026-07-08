@@ -27,6 +27,7 @@ _TRANSITIONS: dict[CandidateStatus, set[CandidateStatus]] = {
     CandidateStatus.PROFILING_QUEUED: {
         CandidateStatus.PROFILING_CALLING,
         CandidateStatus.SELECTED_FOR_PROFILING,  # cancelado de la cola
+        CandidateStatus.PROFILING_FAILED,  # consentimiento de WhatsApp -> REJECTED en espera
     },
     CandidateStatus.PROFILING_CALLING: {
         CandidateStatus.PROFILING_COMPLETED,

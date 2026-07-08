@@ -70,6 +70,21 @@ class CreateJobDescriptionRequest(BaseModel):
     jd_raw_text: str = Field(..., min_length=10)
 
 
+class UpdateVoiceConfigRequest(BaseModel):
+    """Override de configuracion de voz (ElevenLabs) para este proceso. Tiene prioridad
+    sobre los default_* del QuestionSet asociado cuando un campo no es None."""
+
+    voice_override_agent_id: str | None = None
+    voice_override_system_prompt: str | None = None
+    voice_override_first_message: str | None = None
+    voice_override_language: str | None = None
+    voice_override_llm_model: str | None = None
+    voice_override_voice_id: str | None = None
+    voice_override_tts_stability: float | None = None
+    voice_override_tts_speed: float | None = None
+    voice_override_tts_similarity_boost: float | None = None
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -184,6 +199,51 @@ async def get_process(
         } if active_jd else None,
         "created_at": process.created_at.isoformat(),
         "updated_at": process.updated_at.isoformat(),
+    }
+
+
+@router.patch("/{process_id}/voice-config")
+async def update_process_voice_config(
+    process_id: uuid.UUID,
+    body: UpdateVoiceConfigRequest,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    process = await db.get(HiringProcess, process_id)
+    if not process:
+        raise NotFoundException("Proceso no encontrado")
+
+    for field in (
+        "voice_override_agent_id",
+        "voice_override_system_prompt",
+        "voice_override_first_message",
+        "voice_override_language",
+        "voice_override_llm_model",
+        "voice_override_voice_id",
+        "voice_override_tts_stability",
+        "voice_override_tts_speed",
+        "voice_override_tts_similarity_boost",
+    ):
+        value = getattr(body, field)
+        if value is not None:
+            setattr(process, field, value)
+
+    await db.commit()
+    await db.refresh(process)
+
+    return {
+        field: getattr(process, field)
+        for field in (
+            "voice_override_agent_id",
+            "voice_override_system_prompt",
+            "voice_override_first_message",
+            "voice_override_language",
+            "voice_override_llm_model",
+            "voice_override_voice_id",
+            "voice_override_tts_stability",
+            "voice_override_tts_speed",
+            "voice_override_tts_similarity_boost",
+        )
     }
 
 

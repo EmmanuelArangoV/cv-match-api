@@ -7,12 +7,15 @@ from sqlalchemy import (
     DECIMAL,
     TEXT,
     Boolean,
+    Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy import DateTime
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
@@ -104,6 +107,7 @@ class ProfilingRunStatus(str, enum.Enum):
     RETRY_PENDING = "RETRY_PENDING"
     COMPLETED = "COMPLETED"
     CANCELLED = "CANCELLED"
+    VOICEMAIL_DETECTED = "VOICEMAIL_DETECTED"
 
 
 class AdvancementProbability(str, enum.Enum):
@@ -206,6 +210,19 @@ class HiringProcess(Base):
     match_weights_override: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     recruiter_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     question_set_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("question_sets.id", ondelete="SET NULL"), nullable=True)
+
+    # Override de configuracion de voz (ElevenLabs) para este proceso especifico.
+    # Si un campo es NULL, se usa el default_* del QuestionSet asociado (ver QuestionSet).
+    voice_override_agent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    voice_override_system_prompt: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    voice_override_first_message: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    voice_override_language: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    voice_override_llm_model: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    voice_override_voice_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    voice_override_tts_stability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    voice_override_tts_speed: Mapped[float | None] = mapped_column(Float, nullable=True)
+    voice_override_tts_similarity_boost: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -293,6 +310,19 @@ class QuestionSet(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[QuestionSetStatus] = mapped_column(String(20), nullable=False, default=QuestionSetStatus.DRAFT)
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+
+    # Configuracion de voz (ElevenLabs) por defecto para los procesos que usen este set.
+    # HiringProcess.voice_override_* tiene prioridad sobre estos campos si esta seteado.
+    default_agent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    default_system_prompt: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    default_first_message: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    default_language: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    default_llm_model: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    default_voice_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    default_tts_stability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    default_tts_speed: Mapped[float | None] = mapped_column(Float, nullable=True)
+    default_tts_similarity_boost: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -321,6 +351,20 @@ class ProfilingQuestion(Base):
 
 class ProfilingRun(Base):
     __tablename__ = "profiling_runs"
+    __table_args__ = (
+        Index(
+            "uq_profiling_runs_twilio_call_sid",
+            "twilio_call_sid",
+            unique=True,
+            postgresql_where=text("twilio_call_sid IS NOT NULL"),
+        ),
+        Index(
+            "uq_profiling_runs_elevenlabs_conversation_id",
+            "elevenlabs_conversation_id",
+            unique=True,
+            postgresql_where=text("elevenlabs_conversation_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     process_candidate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("process_candidates.id", ondelete="CASCADE"), nullable=False)
@@ -332,10 +376,17 @@ class ProfilingRun(Base):
     call_consent_status: Mapped[CallConsentStatus | None] = mapped_column(String(20), nullable=True)
     call_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Correlacion con Twilio/ElevenLabs
+    twilio_call_sid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    elevenlabs_conversation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    amd_result: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    twilio_status_detail: Mapped[str | None] = mapped_column(String(30), nullable=True)
+
     # Resultado
     advancement_probability: Mapped[AdvancementProbability | None] = mapped_column(String(10), nullable=True)
     advancement_explanation: Mapped[str | None] = mapped_column(TEXT, nullable=True)
     transcription_url: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    transcript_summary: Mapped[str | None] = mapped_column(TEXT, nullable=True)
     call_embedding: Mapped[list | None] = mapped_column(Vector(1536), nullable=True)
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

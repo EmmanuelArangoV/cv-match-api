@@ -26,4 +26,10 @@ celery_app.conf.update(
     timezone="America/Bogota",
     broker_use_ssl=_ssl_opts if settings.redis_url.startswith("rediss://") else {},
     redis_backend_use_ssl=_ssl_opts if settings.redis_url.startswith("rediss://") else {},
+    beat_schedule={
+        "check-stale-profiling-calls": {
+            "task": "check_stale_profiling_calls",
+            "schedule": settings.watchdog_interval_seconds,
+        },
+    },
 )

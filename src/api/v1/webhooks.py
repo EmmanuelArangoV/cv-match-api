@@ -1,19 +1,46 @@
+import asyncio
 import hashlib
 import hmac
-
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
-from sqlalchemy.ext.asyncio import AsyncSession
 import logging
+import uuid
+from datetime import UTC, datetime
+from functools import partial
+from typing import Any
 
-from src.infrastructure.db.models import ProfilingRun, ProfilingRunStatus, ProcessCandidate, CandidateStatus
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from src.application.candidate.whatsapp_message_usecase import ProcessWhatsAppMessageUseCase
+from src.application.profiling.voice_config_resolver import resolve_voice_config
+from src.config import settings
+from src.domain.candidate.state_machine import CandidateStateMachine
+from src.domain.shared.exceptions import BusinessRuleException
+from src.infrastructure.db.database import get_db
+from src.infrastructure.db.models import (
+    Candidate,
+    CandidateStatus,
+    CostLog,
+    HiringProcess,
+    OperationType,
+    ProcessCandidate,
+    ProfilingRun,
+    ProfilingRunStatus,
+)
+from src.infrastructure.voice import elevenlabs_client, twilio_client
+from src.infrastructure.workers.tasks.profiling import (
+    evaluate_profiling_transcription,
+    retry_or_fail_profiling_call,
+)
 
 logger = logging.getLogger(__name__)
 
-from src.application.candidate.whatsapp_message_usecase import ProcessWhatsAppMessageUseCase
-from src.config import settings
-from src.infrastructure.db.database import get_db
-
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
+
+# Créditos ElevenLabs -> USD, aproximado (400 créditos ~= 1 minuto en plan Creator).
+_ELEVENLABS_CREDITS_PER_USD_MINUTE = 400
+_ELEVENLABS_USD_PER_MINUTE_DEFAULT = 0.09
 
 
 def _verify_meta_signature(payload: bytes, signature_header: str | None) -> bool:
@@ -95,106 +122,260 @@ async def receive_whatsapp_message(
     return {"status": "ok"}
 
 
-@router.post("/twilio/amd")
-async def twilio_amd_webhook(
-    request: Request,
-    run_id: str,
-    AnsweredBy: str = Form(None),
-    CallSid: str = Form(None),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Webhook que Twilio llama tras realizar Answering Machine Detection.
-    Parámetros form-data: 
-    - AnsweredBy: machine_start, machine_end_beep, machine_end_silence, machine_end_other, human, unknown
-    - CallSid
-    """
-    logger.info(f"[TWILIO WEBHOOK] RunID: {run_id} | AnsweredBy: {AnsweredBy} | CallSid: {CallSid}")
-    
-    import uuid
+_TWIML_HANGUP = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
+_MACHINE_ANSWERED_BY = {
+    "machine_start",
+    "machine_end_beep",
+    "machine_end_silence",
+    "machine_end_other",
+    "fax",
+}
+_NO_CONNECT_CALL_STATUSES = {"no-answer", "busy", "failed", "canceled"}
+
+
+def _build_twilio_webhook_url(request: Request) -> str:
+    """Reconstruye la URL publica exacta que Twilio invoco (para verificar su firma),
+    ya que request.url puede reflejar el host interno si hay un proxy/ngrok delante."""
+    base = settings.public_base_url.rstrip("/")
+    query = f"?{request.url.query}" if request.url.query else ""
+    return f"{base}{request.url.path}{query}"
+
+
+def _form_to_str_dict(form: Any) -> dict[str, str]:
+    return {k: str(v) for k, v in form.items()}
+
+
+async def _get_run_or_none(db: AsyncSession, run_id: str) -> ProfilingRun | None:
     try:
         run_uuid = uuid.UUID(run_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid run_id")
-        
-    profiling_run = await db.get(ProfilingRun, run_uuid)
-    
+    except ValueError:
+        raise HTTPException(status_code=400, detail="run_id invalido")
+    return await db.get(ProfilingRun, run_uuid)
+
+
+def _build_dynamic_variables(
+    pc: ProcessCandidate, process: HiringProcess, candidate: Candidate
+) -> dict[str, str]:
+    return {
+        "candidate_name": f"{candidate.name} {candidate.last_name}".strip(),
+        "job_title": process.job_title,
+        "process_id": str(process.id),
+    }
+
+
+@router.post("/twilio/twiml")
+async def twilio_twiml_webhook(
+    request: Request, run_id: str, db: AsyncSession = Depends(get_db)
+) -> Response:
+    """
+    Webhook que Twilio invoca tras Answering Machine Detection sincrono, pidiendo el
+    TwiML a responder. Si AMD detecto maquina -> cuelga y reintenta. Si contesto un
+    humano -> registra la llamada en ElevenLabs (register_call) inyectando el system
+    prompt/voz resueltos dinamicamente, y devuelve el TwiML que arma el propio SDK.
+    """
+    form = await request.form()
+    signature = request.headers.get("X-Twilio-Signature")
+    url = _build_twilio_webhook_url(request)
+    valid = await asyncio.to_thread(
+        partial(twilio_client.validate_twilio_signature, url, _form_to_str_dict(form), signature)
+    )
+    if not valid:
+        raise HTTPException(status_code=403, detail="Firma de Twilio invalida")
+
+    answered_by = form.get("AnsweredBy")
+    call_sid = str(form.get("CallSid", ""))
+    to_number = str(form.get("To", ""))
+
+    # Una sola consulta con eager-load de todo lo necesario — Twilio ya viene de esperar
+    # el analisis de AMD, cada round-trip adicional a Supabase aqui es silencio en vivo
+    # para quien contesto la llamada.
+    result = await db.execute(
+        select(ProfilingRun)
+        .where(ProfilingRun.id == uuid.UUID(run_id))
+        .options(
+            selectinload(ProfilingRun.question_set),
+            selectinload(ProfilingRun.process_candidate).selectinload(ProcessCandidate.candidate),
+            selectinload(ProfilingRun.process_candidate).selectinload(ProcessCandidate.process),
+        )
+    )
+    profiling_run = result.scalar_one_or_none()
     if not profiling_run:
-        logger.error(f"ProfilingRun {run_id} not found")
-        return {"error": "not found"}
+        logger.error(f"[twilio][twiml] ProfilingRun {run_id} no encontrado")
+        return Response(content=_TWIML_HANGUP, media_type="application/xml")
 
-    pc = await db.get(ProcessCandidate, profiling_run.process_candidate_id)
-
-    # Si fue contestador automático o desconocido
-    if AnsweredBy in ("machine_start", "machine_end_beep", "machine_end_silence", "machine_end_other", "unknown", None):
-        profiling_run.status = ProfilingRunStatus.NO_ANSWER.value
-        if pc:
-            pc.status = CandidateStatus.PROFILING_FAILED.value
+    if answered_by in _MACHINE_ANSWERED_BY or answered_by in (None, "unknown"):
+        profiling_run.status = ProfilingRunStatus.VOICEMAIL_DETECTED.value
+        profiling_run.amd_result = str(answered_by or "unknown")
         await db.commit()
-        # Twilio necesita TwiML para colgar
-        twiml = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
-        return Response(content=twiml, media_type="application/xml")
+        retry_or_fail_profiling_call.delay(str(profiling_run.id), f"AMD:{answered_by}")
+        return Response(content=_TWIML_HANGUP, media_type="application/xml")
 
-    # Si fue humano
+    # Humano: resolver la config de voz efectiva y registrar la llamada en ElevenLabs.
     profiling_run.status = ProfilingRunStatus.ANSWERED.value
+    profiling_run.amd_result = str(answered_by)
+    pc = profiling_run.process_candidate
+    process = pc.process if pc else None
+    question_set = profiling_run.question_set
+    candidate = pc.candidate if pc else None
+
+    if not (pc and process and question_set and candidate):
+        logger.error(f"[twilio][twiml] datos incompletos para ProfilingRun {run_id}")
+        await db.commit()
+        return Response(content=_TWIML_HANGUP, media_type="application/xml")
+
+    voice_config = resolve_voice_config(question_set, process)
+    dynamic_variables = _build_dynamic_variables(pc, process, candidate)
+
+    try:
+        twiml = await asyncio.to_thread(
+            partial(
+                elevenlabs_client.register_call,
+                voice_config,
+                dynamic_variables,
+                to_number,
+                call_sid,
+            )
+        )
+    except Exception as exc:
+        logger.error(f"[elevenlabs] register_call fallo para run {run_id}: {exc}")
+        await db.commit()
+        return Response(content=_TWIML_HANGUP, media_type="application/xml")
+
     await db.commit()
-    
-    # Twilio necesita TwiML para conectar la llamada al stream de ElevenLabs
-    from src.config import settings
-    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Connect>
-        <Stream url="wss://api.elevenlabs.io/v1/convai/conversation?agent_id={getattr(settings, 'elevenlabs_agent_id', 'mock')}">
-            <Parameter name="profiling_run_id" value="{run_id}" />
-        </Stream>
-    </Connect>
-</Response>"""
     return Response(content=twiml, media_type="application/xml")
 
 
-@router.post("/elevenlabs")
-async def elevenlabs_webhook(
-    request: Request,
-    db: AsyncSession = Depends(get_db)
-):
+@router.post("/twilio/status")
+async def twilio_status_webhook(
+    request: Request, run_id: str, db: AsyncSession = Depends(get_db)
+) -> dict[str, str]:
     """
-    Webhook que ElevenLabs llama al finalizar la conversación (post-call transcript).
+    Captura llamadas que nunca llegaron a /twiml (no-answer/busy/failed/canceled) —
+    la unica forma de saber que una llamada jamas conecto, ya que AMD no llega a correr.
     """
-    payload = await request.json()
-    logger.info(f"[ELEVENLABS WEBHOOK] Recibido payload")
-    
-    # Extraer custom_variables (que enviamos en el Stream Parameter) para encontrar el run_id
-    custom_vars = payload.get("custom_variables", {})
-    run_id = custom_vars.get("profiling_run_id")
-    
-    if not run_id:
-        # Intento fallback
-        run_id = payload.get("conversation_id")
-        logger.warning(f"No run_id en custom_variables, usando id {run_id}")
+    form = await request.form()
+    signature = request.headers.get("X-Twilio-Signature")
+    url = _build_twilio_webhook_url(request)
+    valid = await asyncio.to_thread(
+        partial(twilio_client.validate_twilio_signature, url, _form_to_str_dict(form), signature)
+    )
+    if not valid:
+        raise HTTPException(status_code=403, detail="Firma de Twilio invalida")
+
+    call_status = str(form.get("CallStatus", ""))
+    call_sid = str(form.get("CallSid", ""))
+
+    if call_status not in _NO_CONNECT_CALL_STATUSES:
         return {"status": "ignored"}
 
-    import uuid
-    try:
-        run_uuid = uuid.UUID(run_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid run_id")
-        
-    profiling_run = await db.get(ProfilingRun, run_uuid)
-    
+    profiling_run = await _get_run_or_none(db, run_id)
     if not profiling_run:
-        logger.error(f"ProfilingRun {run_id} no encontrado en webhook elevenlabs")
-        return {"error": "not found"}
+        return {"status": "ignored"}
 
-    # Extraer transcripción
-    transcript = payload.get("transcript", "")
-    profiling_run.transcription_url = "webhook_payload" # simulado
-    profiling_run.status = ProfilingRunStatus.COMPLETED.value
-    
+    # Idempotencia: si /twiml ya proceso esta llamada (AMD corrio) o ya se reintento
+    # con un CallSid nuevo, este evento de /status ya quedo obsoleto.
+    if profiling_run.twilio_call_sid != call_sid:
+        return {"status": "ignored"}
+    if profiling_run.status != ProfilingRunStatus.CALLING.value:
+        return {"status": "ignored"}
+
+    profiling_run.status = ProfilingRunStatus.VOICEMAIL_DETECTED.value
+    profiling_run.twilio_status_detail = call_status
     await db.commit()
-    
-    # Encolar la evaluación post-profiling con la transcripción
-    from src.infrastructure.workers.tasks.profiling import evaluate_profiling_transcription
-    evaluate_profiling_transcription.delay(str(run_id), transcript)
-    
+    retry_or_fail_profiling_call.delay(str(profiling_run.id), f"status:{call_status}")
+    return {"status": "ok"}
+
+
+def _estimate_elevenlabs_cost_usd(metadata: dict[str, Any]) -> float:
+    credits = metadata.get("cost", 0) or 0
+    usd_per_minute = _ELEVENLABS_USD_PER_MINUTE_DEFAULT
+    return round((credits / _ELEVENLABS_CREDITS_PER_USD_MINUTE) * usd_per_minute, 6)
+
+
+@router.post("/elevenlabs/post-call-transcription")
+async def elevenlabs_post_call_webhook(
+    request: Request, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    """
+    Webhook nativo de plataforma de ElevenLabs (post_call_transcription), configurado
+    aparte en su dashboard. Trae transcript/resumen/costo de la conversacion, y se
+    correlaciona con nuestro ProfilingRun via el twilio_call_sid que inyectamos como
+    dynamic_variable al registrar la llamada.
+    """
+    raw_body = await request.body()
+    sig_header = request.headers.get("ElevenLabs-Signature")
+    try:
+        payload = await asyncio.to_thread(
+            partial(
+                elevenlabs_client.verify_webhook_signature,
+                raw_body.decode("utf-8"),
+                sig_header,
+            )
+        )
+    except Exception as exc:
+        logger.warning(f"[elevenlabs][post-call] firma invalida: {exc}")
+        raise HTTPException(status_code=403, detail="Firma de ElevenLabs invalida")
+
+    data = payload.get("data", payload)
+    conversation_id = data.get("conversation_id")
+    client_data = data.get("conversation_initiation_client_data", {}) or {}
+    dynamic_variables = client_data.get("dynamic_variables", {}) or {}
+    twilio_call_sid = dynamic_variables.get("twilio_call_sid")
+
+    profiling_run = None
+    if twilio_call_sid:
+        result = await db.execute(
+            select(ProfilingRun)
+            .where(ProfilingRun.twilio_call_sid == twilio_call_sid)
+            .with_for_update()
+        )
+        profiling_run = result.scalar_one_or_none()
+    if not profiling_run and conversation_id:
+        result = await db.execute(
+            select(ProfilingRun)
+            .where(ProfilingRun.elevenlabs_conversation_id == conversation_id)
+            .with_for_update()
+        )
+        profiling_run = result.scalar_one_or_none()
+
+    if not profiling_run:
+        logger.error(f"[elevenlabs][post-call] no se pudo correlacionar conv_id={conversation_id}")
+        return {"status": "ignored"}
+
+    if profiling_run.status == ProfilingRunStatus.COMPLETED.value:
+        return {"status": "ok", "idempotent": True}
+
+    analysis = data.get("analysis", {}) or {}
+    metadata = data.get("metadata", {}) or {}
+    transcript = data.get("transcript", "")
+
+    profiling_run.elevenlabs_conversation_id = conversation_id
+    profiling_run.transcript_summary = analysis.get("transcript_summary")
+    profiling_run.status = ProfilingRunStatus.COMPLETED.value
+    profiling_run.completed_at = datetime.now(UTC)
+
+    pc = await db.get(ProcessCandidate, profiling_run.process_candidate_id)
+    if pc:
+        try:
+            pc.status = CandidateStateMachine.transition(
+                CandidateStatus(pc.status), CandidateStatus.PROFILING_COMPLETED
+            )
+        except BusinessRuleException as exc:
+            logger.warning(f"[elevenlabs][post-call] transicion invalida para {pc.id}: {exc}")
+
+    db.add(
+        CostLog(
+            process_id=pc.process_id if pc else None,
+            candidate_id=pc.candidate_id if pc else None,
+            operation_type=OperationType.VOICE_CALL.value,
+            model_used="elevenlabs-conversational-ai",
+            call_duration_s=int(metadata.get("call_duration_secs", 0) or 0),
+            estimated_cost=_estimate_elevenlabs_cost_usd(metadata),
+        )
+    )
+
+    await db.commit()
+
+    evaluate_profiling_transcription.delay(str(profiling_run.id), transcript)
     return {"status": "ok"}
 

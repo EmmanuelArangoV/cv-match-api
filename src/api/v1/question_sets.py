@@ -57,6 +57,17 @@ class UpdateQuestionSetRequest(BaseModel):
     description: str | None = None
     status: str | None = None
 
+    # Configuracion de voz (ElevenLabs) por defecto para procesos que usen este set.
+    default_agent_id: str | None = None
+    default_system_prompt: str | None = None
+    default_first_message: str | None = None
+    default_language: str | None = None
+    default_llm_model: str | None = None
+    default_voice_id: str | None = None
+    default_tts_stability: float | None = None
+    default_tts_speed: float | None = None
+    default_tts_similarity_boost: float | None = None
+
 
 class AddQuestionRequest(BaseModel):
     order_index: int = 0
@@ -112,6 +123,15 @@ def _serialize_set(qs: QuestionSet, include_questions: bool = False) -> dict:
         "created_by": str(qs.created_by),
         "created_at": qs.created_at.isoformat(),
         "updated_at": qs.updated_at.isoformat(),
+        "default_agent_id": qs.default_agent_id,
+        "default_system_prompt": qs.default_system_prompt,
+        "default_first_message": qs.default_first_message,
+        "default_language": qs.default_language,
+        "default_llm_model": qs.default_llm_model,
+        "default_voice_id": qs.default_voice_id,
+        "default_tts_stability": qs.default_tts_stability,
+        "default_tts_speed": qs.default_tts_speed,
+        "default_tts_similarity_boost": qs.default_tts_similarity_boost,
     }
     if include_questions:
         data["questions"] = [_serialize_question(q) for q in qs.questions]
@@ -221,6 +241,21 @@ async def update_question_set(
         if body.status not in VALID_SET_STATUSES:
             raise BusinessRuleException(f"Estado inválido: '{body.status}'. Valores válidos: {sorted(VALID_SET_STATUSES)}")
         qs.status = body.status
+
+    for field in (
+        "default_agent_id",
+        "default_system_prompt",
+        "default_first_message",
+        "default_language",
+        "default_llm_model",
+        "default_voice_id",
+        "default_tts_stability",
+        "default_tts_speed",
+        "default_tts_similarity_boost",
+    ):
+        value = getattr(body, field)
+        if value is not None:
+            setattr(qs, field, value)
 
     await db.commit()
     await db.refresh(qs)

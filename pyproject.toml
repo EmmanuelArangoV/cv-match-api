@@ -46,8 +46,12 @@ dependencies = [
     # Phone normalization
     "phonenumbers>=8.13.0",
 
-    # HTTP client (ElevenLabs, Meta WhatsApp)
+    # HTTP client (Meta WhatsApp)
     "httpx>=0.28.0",
+
+    # Voice profiling (Twilio + ElevenLabs)
+    "twilio>=9.0.0",
+    "elevenlabs>=2.56.0",
 
     # Logging
     "structlog>=24.4.0",
