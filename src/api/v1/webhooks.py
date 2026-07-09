@@ -186,8 +186,14 @@ async def twilio_twiml_webhook(
     """
     Webhook que Twilio invoca tras Answering Machine Detection sincrono, pidiendo el
     TwiML a responder. Si AMD detecto maquina -> cuelga y reintenta. Si contesto un
-    humano -> registra la llamada en ElevenLabs (register_call) inyectando el system
-    prompt/voz resueltos dinamicamente, y devuelve el TwiML que arma el propio SDK.
+    humano (o AMD fue inconcluso: "unknown") -> registra la llamada en ElevenLabs
+    (register_call) inyectando el system prompt/voz resueltos dinamicamente, y
+    devuelve el TwiML que arma el propio SDK.
+
+    "unknown" se trata como humano a proposito: Twilio no logro decidir dentro de
+    MACHINE_DETECTION_TIMEOUT, y colgar en ese caso estaba dejando timbrar y
+    cortar llamadas que si eran un humano real (falso negativo mas costoso que
+    arriesgarse ocasionalmente a hablarle a un contestador).
     """
     form = await request.form()
     signature = request.headers.get("X-Twilio-Signature")
@@ -219,14 +225,15 @@ async def twilio_twiml_webhook(
         logger.error(f"[twilio][twiml] ProfilingRun {run_id} no encontrado")
         return Response(content=_TWIML_HANGUP, media_type="application/xml")
 
-    if answered_by in _MACHINE_ANSWERED_BY or answered_by in (None, "unknown"):
+    if answered_by in _MACHINE_ANSWERED_BY or answered_by is None:
         profiling_run.status = ProfilingRunStatus.VOICEMAIL_DETECTED.value
         profiling_run.amd_result = str(answered_by or "unknown")
         await db.commit()
         retry_or_fail_profiling_call.delay(str(profiling_run.id), f"AMD:{answered_by}")
         return Response(content=_TWIML_HANGUP, media_type="application/xml")
 
-    # Humano: resolver la config de voz efectiva y registrar la llamada en ElevenLabs.
+    # Humano (o "unknown" — AMD inconcluso, se trata como humano): resolver la
+    # config de voz efectiva y registrar la llamada en ElevenLabs.
     profiling_run.status = ProfilingRunStatus.ANSWERED.value
     profiling_run.amd_result = str(answered_by)
     pc = profiling_run.process_candidate
