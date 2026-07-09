@@ -214,6 +214,22 @@ def parse_cv(
             openai_client = _get_openai()
             extracted, tokens_in, tokens_out = _call_openai(content_blocks, openai_client)
 
+            # Deduplicación por correo
+            ext_email = extracted.get("email")
+            if ext_email and "@placeholder" in candidate.email:
+                existing = db.query(Candidate).filter(Candidate.email == ext_email).first()
+                if existing:
+                    # Apuntar al existente y tratar de borrar el temporal
+                    pc.candidate_id = existing.id
+                    db.flush()
+                    try:
+                        db.delete(candidate)
+                    except Exception:
+                        pass
+                    candidate = existing
+                else:
+                    candidate.email = ext_email
+
             # Actualizar candidato con datos extraídos
             candidate.extracted_profile = extracted
             candidate.normalized_cv = extracted
@@ -233,9 +249,6 @@ def parse_cv(
                 candidate.last_name = parts[1][:100]
             elif full_name:
                 candidate.name = full_name[:100]
-
-            if extracted.get("email") and "@placeholder" in candidate.email:
-                candidate.email = extracted["email"]
 
             if extracted.get("phone"):
                 candidate.phone = extracted["phone"][:20]
