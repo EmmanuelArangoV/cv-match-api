@@ -50,8 +50,13 @@ Cargo al que aplica: {job_title}
 Empresa: Riwi Corp
 Estado actual de consentimiento: {consent_status}
 
-═══ MENSAJE DEL CANDIDATO ═══
-"{message_text}"
+═══ MEMORIA ═══
+Debajo de este mensaje de sistema vas a recibir el historial real de turnos ya intercambiados
+con este candidato (si los hay), seguido del mensaje nuevo que debes responder ahora.
+- Si el historial ya tiene turnos previos, NO vuelvas a saludar ni a re-presentarte
+  ("Hola, soy Riwi...", "te contactamos de Riwi Corp...") — continúa la conversación de forma
+  natural, como si recordaras todo lo dicho antes.
+- El saludo inicial y la presentación solo aplican si este es el primer turno (historial vacío).
 
 ═══ TU OBJETIVO ═══
 1. Clasificar la INTENCIÓN del mensaje (ver opciones abajo).
@@ -131,6 +136,10 @@ _REJECT_REPLY = (
     "Si en algun momento cambias de opinion o tienes preguntas, estamos aqui."
 )
 
+# Turnos de historial (user+assistant) que se le pasan al modelo y se persisten —
+# suficiente para que la conversacion fluya sin dejar crecer el prompt sin limite.
+_MAX_HISTORY_TURNS = 20
+
 
 class ProcessWhatsAppMessageUseCase:
     def __init__(self, db: AsyncSession) -> None:
@@ -184,23 +193,28 @@ class ProcessWhatsAppMessageUseCase:
         candidate = pc.candidate
         process = pc.process
 
-        # Construir el prompt con contexto real
         # Clics de botón de la plantilla — respuesta directa sin pasar por IA
         button_intent = _resolve_button_intent(message_text)
         if button_intent:
-            await self._apply_intent(pc, button_intent, None, from_phone)
+            await self._apply_intent(pc, button_intent, None, from_phone, message_text)
             return
 
-        prompt = _AGENT_SYSTEM_PROMPT.format(
+        system_prompt = _AGENT_SYSTEM_PROMPT.format(
             candidate_name=f"{candidate.name} {candidate.last_name}".strip(),
             job_title=process.job_title,
             consent_status=pc.whatsapp_consent_status,
-            message_text=message_text,
         )
+
+        history: list[dict[str, str]] = pc.whatsapp_conversation or []
+        messages = [
+            {"role": "system", "content": system_prompt},
+            *history,
+            {"role": "user", "content": message_text},
+        ]
 
         ai_response = await self.ai.chat.completions.create(
             model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             response_format={"type": "json_object"},
             temperature=0.3,
         )
@@ -212,7 +226,7 @@ class ProcessWhatsAppMessageUseCase:
         reply: str = analysis.get("reply_text", "")
         availability: dict | None = analysis.get("availability")
 
-        await self._apply_intent(pc, intent, availability, from_phone, reply)
+        await self._apply_intent(pc, intent, availability, from_phone, message_text, reply)
 
     async def _apply_intent(
         self,
@@ -220,6 +234,7 @@ class ProcessWhatsAppMessageUseCase:
         intent: str,
         availability: dict | None,
         from_phone: str,
+        user_message: str,
         reply: str = "",
     ) -> None:
         if intent == "ACCEPTED":
@@ -255,6 +270,12 @@ class ProcessWhatsAppMessageUseCase:
 
         if availability and intent in ("ACCEPTED", "AVAILABILITY_ONLY"):
             pc.availability_preference = availability
+
+        history = list(pc.whatsapp_conversation or [])
+        history.append({"role": "user", "content": user_message})
+        if reply:
+            history.append({"role": "assistant", "content": reply})
+        pc.whatsapp_conversation = history[-_MAX_HISTORY_TURNS:]
 
         await self.db.commit()
 

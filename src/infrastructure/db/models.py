@@ -287,6 +287,9 @@ class ProcessCandidate(Base):
     whatsapp_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     whatsapp_responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     availability_preference: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Historial de turnos [{"role": "user"|"assistant", "content": str}, ...] — le da memoria
+    # al agente de WhatsApp para que no se re-presente en cada mensaje del mismo hilo.
+    whatsapp_conversation: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
     # Notas del recruiter y override humano
     human_notes: Mapped[str | None] = mapped_column(TEXT, nullable=True)
