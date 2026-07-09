@@ -13,7 +13,11 @@ _TRANSITIONS: dict[CandidateStatus, set[CandidateStatus]] = {
         CandidateStatus.CV_PROCESSING,  # reintento
     },
     CandidateStatus.MATCH_PENDING: {
+        CandidateStatus.MATCH_PROCESSING,
+    },
+    CandidateStatus.MATCH_PROCESSING: {
         CandidateStatus.MATCHED,
+        CandidateStatus.MATCH_PENDING,  # CV aun no procesado, se revierte el claim
     },
     CandidateStatus.MATCHED: {
         CandidateStatus.SELECTED_FOR_PROFILING,

@@ -235,6 +235,46 @@ def build_match_messages(
 
 
 # ---------------------------------------------------------------------------
+# JOB DESCRIPTION PARSING
+# ---------------------------------------------------------------------------
+
+_JD_PARSE_SYSTEM_PROMPT = """\
+You are an expert technical recruiter. Your job is to read a raw Job Description \
+(free text, possibly unstructured or written in Spanish or English) and extract \
+its key requirements into a strict JSON structure so a recruiter can review and \
+confirm them before matching candidates.
+
+IMPORTANT RULES:
+1. Return ONLY valid JSON — no markdown, no extra text, no code fences.
+2. `must_have`: non-negotiable requirements (skills, years of experience, \
+certifications, language level) explicitly stated or clearly implied as mandatory.
+3. `nice_to_have`: requirements described as a plus, preferred, or desirable.
+4. `deal_breakers`: explicit disqualifying conditions (e.g. "no remote candidates", \
+"must be willing to relocate", availability constraints stated as blocking).
+5. Keep each item short (a single requirement per string, no more than ~15 words).
+6. `summary`: a 2-3 sentence neutral summary of the role and seniority level.
+7. If a category has no clear items, return an empty array — never invent content.
+
+Return a JSON object with EXACTLY this schema:
+
+{
+  "must_have": ["<string>"],
+  "nice_to_have": ["<string>"],
+  "deal_breakers": ["<string>"],
+  "summary": "<string>"
+}
+"""
+
+
+def build_jd_parse_messages(raw_text: str) -> list[dict]:
+    """Construye los mensajes para pedirle a OpenAI que estructure una JD en texto libre."""
+    return [
+        {"role": "system", "content": _JD_PARSE_SYSTEM_PROMPT},
+        {"role": "user", "content": raw_text},
+    ]
+
+
+# ---------------------------------------------------------------------------
 # POST-PROFILING EVALUATION
 # ---------------------------------------------------------------------------
 

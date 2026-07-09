@@ -3,24 +3,31 @@ import uuid
 
 import fitz  # pymupdf
 from docx import Document as DocxDocument
-from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.api.deps import RequireRecruiter, RequireRecruiterWithQuery, RequireTALeader, get_current_user
+from src.api.deps import (
+    RequireRecruiter,
+    RequireRecruiterWithQuery,
+    RequireTALeader,
+    get_current_user,
+)
+from src.application.hiring_process.jd_parse_usecase import ParseJobDescriptionUseCase
+from src.domain.hiring_process.rules import HiringProcessRules
 from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
 from src.infrastructure.db.database import get_db
 from src.infrastructure.db.models import (
     HiringProcess,
     JobDescription,
     ProcessStatus,
+    QuestionSet,
     User,
 )
 from src.infrastructure.storage import r2_client
-
 
 # ---------------------------------------------------------------------------
 # Text extraction helpers
@@ -68,6 +75,10 @@ class CreateProcessRequest(BaseModel):
 
 class CreateJobDescriptionRequest(BaseModel):
     jd_raw_text: str = Field(..., min_length=10)
+
+
+class UpdateQuestionSetAssignmentRequest(BaseModel):
+    question_set_id: uuid.UUID
 
 
 class UpdateVoiceConfigRequest(BaseModel):
@@ -188,6 +199,9 @@ async def get_process(
         "status": process.status,
         "budget_max_usd": float(process.budget_max_usd),
         "match_weights": process.match_weights_override,
+        "question_set_id": str(process.question_set_id) if process.question_set_id else None,
+        "voice_override_system_prompt": process.voice_override_system_prompt,
+        "voice_override_first_message": process.voice_override_first_message,
         "job_description": {
             "jd_id": str(active_jd.id),
             "version": active_jd.version,
@@ -199,6 +213,33 @@ async def get_process(
         } if active_jd else None,
         "created_at": process.created_at.isoformat(),
         "updated_at": process.updated_at.isoformat(),
+    }
+
+
+@router.patch("/{process_id}/question-set")
+async def update_process_question_set(
+    process_id: uuid.UUID,
+    body: UpdateQuestionSetAssignmentRequest,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Asocia un QuestionSet al proceso (RB-003: requerido para habilitar profiling)."""
+    process = await db.get(HiringProcess, process_id)
+    if not process:
+        raise NotFoundException("Proceso no encontrado")
+
+    HiringProcessRules.require_active_process(ProcessStatus(process.status))
+
+    question_set = await db.get(QuestionSet, body.question_set_id)
+    if not question_set:
+        raise NotFoundException("Set de preguntas no encontrado")
+
+    process.question_set_id = question_set.id
+    await db.commit()
+
+    return {
+        "process_id": str(process.id),
+        "question_set_id": str(process.question_set_id),
     }
 
 
@@ -286,6 +327,21 @@ async def create_job_description(
         "version": jd.version,
         "created_at": jd.created_at.isoformat(),
     }
+
+
+@router.post("/{process_id}/job-description/parse")
+async def parse_job_description(
+    process_id: uuid.UUID,
+    body: CreateJobDescriptionRequest,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Analiza una JD en texto libre con IA. No persiste nada (ver saveJD)."""
+    process = await db.get(HiringProcess, process_id)
+    if not process:
+        raise NotFoundException("Proceso no encontrado")
+
+    return await ParseJobDescriptionUseCase().execute(body.jd_raw_text)
 
 
 @router.post("/{process_id}/job-description/upload", status_code=201)

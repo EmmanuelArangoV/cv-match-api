@@ -138,8 +138,11 @@ class UploadCVsUseCase:
                 
                 if process.status == ProcessStatus.DRAFT.value:
                     process.status = ProcessStatus.CVS_UPLOADED.value
-                await self._db.flush()
-                
+                # Commit antes de encolar: get_db() solo comitea al final del
+                # request, y el worker de Celery lee con una conexion distinta
+                # que no ve filas todavia sin comitear (causaba "not found").
+                await self._db.commit()
+
                 # Ejecutar match inmediatamente (ya tenemos la normalización)
                 from src.infrastructure.workers.tasks.run_match import run_match
                 task = run_match.delay(
@@ -183,7 +186,10 @@ class UploadCVsUseCase:
                 if process.status == ProcessStatus.DRAFT.value:
                     process.status = ProcessStatus.CVS_UPLOADED.value
 
-                await self._db.flush()
+                # Commit antes de encolar: get_db() solo comitea al final del
+                # request, y el worker de Celery lee con una conexion distinta
+                # que no ve filas todavia sin comitear (causaba "not found").
+                await self._db.commit()
 
                 task = parse_cv.delay(
                     str(candidate_id),

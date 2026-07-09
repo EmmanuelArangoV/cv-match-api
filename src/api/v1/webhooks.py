@@ -117,7 +117,13 @@ async def receive_whatsapp_message(
             for message in value["messages"]:
                 from_phone, text = _extract_message_content(message)
                 if from_phone and text:
-                    await use_case.execute(from_phone, text)
+                    try:
+                        await use_case.execute(from_phone, text)
+                    except Exception as exc:
+                        # Meta reintenta (y puede deshabilitar la suscripcion) si
+                        # el webhook responde con error — un mensaje problematico
+                        # no debe tumbar el resto del batch ni el ack a Meta.
+                        logger.error(f"[whatsapp] error procesando mensaje de {from_phone}: {exc}")
 
     return {"status": "ok"}
 

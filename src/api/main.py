@@ -1,8 +1,21 @@
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from src.api.v1 import auth, candidates, debug, match, processes, question_sets, webhooks
+from src.api.v1 import (
+    ai_config,
+    auth,
+    candidates,
+    debug,
+    match,
+    metrics,
+    processes,
+    profiling,
+    question_sets,
+    webhooks,
+)
 from src.config import settings
 from src.domain.shared.exceptions import (
     BusinessRuleException,
@@ -12,6 +25,11 @@ from src.domain.shared.exceptions import (
     NotFoundException,
     UnauthorizedException,
 )
+
+# Sin esto el logger raiz queda en WARNING y los logger.info(...) de nuestros propios
+# modulos (webhooks de voz, clientes de Twilio/ElevenLabs) nunca se ven en este proceso
+# (uvicorn si configura sus loggers de acceso, pero no el logger raiz de la app).
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 app = FastAPI(
     title="RIWI MATCH API",
@@ -68,6 +86,10 @@ app.include_router(candidates.router, prefix="/api/v1")
 app.include_router(webhooks.router, prefix="/api/v1")
 app.include_router(match.router, prefix="/api/v1")
 app.include_router(question_sets.router, prefix="/api/v1")
+app.include_router(profiling.router, prefix="/api/v1")
+app.include_router(profiling.global_router, prefix="/api/v1")
+app.include_router(metrics.router, prefix="/api/v1")
+app.include_router(ai_config.router, prefix="/api/v1")
 
 if not settings.is_production:
     app.include_router(debug.router, prefix="/api/v1")

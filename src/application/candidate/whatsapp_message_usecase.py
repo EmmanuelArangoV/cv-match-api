@@ -1,21 +1,28 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 from datetime import datetime, timezone
 
 from openai import AsyncOpenAI
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.config import settings
+from src.domain.candidate.state_machine import CandidateStateMachine
+from src.domain.shared.exceptions import BusinessRuleException
 from src.infrastructure.db.models import (
     Candidate,
+    CandidateStatus,
     HiringProcess,
     ProcessCandidate,
     WhatsAppConsentStatus,
 )
 from src.infrastructure.messaging.whatsapp_client import whatsapp_client
+
+logger = logging.getLogger(__name__)
 
 # Títulos exactos de los botones de la plantilla aprobada por Meta
 _BUTTON_ACCEPT = "autorizo llamada"
@@ -131,12 +138,16 @@ class ProcessWhatsAppMessageUseCase:
         self.ai = AsyncOpenAI(api_key=settings.openai_api_key)
 
     async def execute(self, from_phone: str, message_text: str) -> None:
-        # Buscar ProcessCandidate pendiente de respuesta para este teléfono
+        # Meta manda el "from" en solo dígitos (p.ej. "573147573205"), pero
+        # Candidate.phone puede traer "+", espacios o guiones segun como lo
+        # extrajo el parseo del CV (p.ej. "+57 314 757 3205") — comparamos
+        # solo dígitos en ambos lados para no perder la coincidencia.
+        digits_only = re.sub(r"\D", "", from_phone)
         stmt = (
             select(ProcessCandidate)
             .join(Candidate)
             .join(HiringProcess)
-            .where(Candidate.phone == from_phone)
+            .where(func.regexp_replace(Candidate.phone, r"\D", "", "g") == digits_only)
             .where(
                 ProcessCandidate.whatsapp_consent_status.in_([
                     WhatsAppConsentStatus.PENDING.value,
@@ -153,14 +164,21 @@ class ProcessWhatsAppMessageUseCase:
         pc = result.scalars().first()
 
         if not pc:
-            await whatsapp_client.send_text_message(
-                to_phone=from_phone,
-                message=(
-                    "Hola, gracias por escribirnos. "
-                    "En este momento no tienes procesos de selección activos con Riwi. "
-                    "Si crees que esto es un error, escríbenos a talent@riwi.io."
-                ),
-            )
+            # No dejar que un envio fallido (numero de prueba invalido, rate
+            # limit, etc.) tumbe el webhook completo con 500 — Meta reintenta
+            # webhooks que fallan, y ademas puede terminar deshabilitando la
+            # suscripcion si ve fallos repetidos.
+            try:
+                await whatsapp_client.send_text_message(
+                    to_phone=from_phone,
+                    message=(
+                        "Hola, gracias por escribirnos. "
+                        "En este momento no tienes procesos de selección activos con Riwi. "
+                        "Si crees que esto es un error, escríbenos a talent@riwi.io."
+                    ),
+                )
+            except Exception as exc:
+                logger.warning(f"[whatsapp] no se pudo responder a {from_phone}: {exc}")
             return
 
         candidate = pc.candidate
@@ -208,14 +226,28 @@ class ProcessWhatsAppMessageUseCase:
             pc.whatsapp_consent_status = WhatsAppConsentStatus.ACCEPTED.value
             pc.whatsapp_responded_at = datetime.now(timezone.utc)
             reply = reply or _ACCEPT_REPLY
-            
-            # Encolar la llamada a Twilio para profiling usando el delay configurado (24h por defecto)
+
+            # El consentimiento por WhatsApp reemplaza la selección manual explícita
+            # (RB-004) cuando el WhatsApp se disparó automáticamente tras el match —
+            # sin este avance de estado, start_profiling_call falla siempre: la
+            # transición a PROFILING_CALLING solo es válida desde PROFILING_QUEUED.
+            try:
+                status = CandidateStateMachine.transition(
+                    CandidateStatus(pc.status), CandidateStatus.SELECTED_FOR_PROFILING
+                )
+                pc.status = CandidateStateMachine.transition(
+                    status, CandidateStatus.PROFILING_QUEUED
+                )
+            except BusinessRuleException:
+                pass  # ya en un estado de profiling en curso; no bloquear el consentimiento
+
+            # Encolar la llamada a Twilio con el delay configurado (24h por defecto)
             from src.infrastructure.workers.tasks.profiling import start_profiling_call
             start_profiling_call.apply_async(
                 args=[str(pc.id)],
                 countdown=settings.profiling_delay_seconds
             )
-            
+
         elif intent == "REJECTED":
             pc.whatsapp_consent_status = WhatsAppConsentStatus.REJECTED.value
             pc.whatsapp_responded_at = datetime.now(timezone.utc)
@@ -227,4 +259,9 @@ class ProcessWhatsAppMessageUseCase:
         await self.db.commit()
 
         if reply:
-            await whatsapp_client.send_text_message(to_phone=from_phone, message=reply)
+            # El estado ya quedo comiteado — un fallo de envio aqui no debe
+            # revertir ni bloquear la transicion ya aplicada (RB-004/consentimiento).
+            try:
+                await whatsapp_client.send_text_message(to_phone=from_phone, message=reply)
+            except Exception as exc:
+                logger.warning(f"[whatsapp] no se pudo enviar la respuesta a {from_phone}: {exc}")
