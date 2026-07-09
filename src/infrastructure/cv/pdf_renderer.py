@@ -2,13 +2,13 @@
 Genera un PDF normalizado en formato BBLABS a partir del normalized_cv JSON.
 Usa PyMuPDF Story (HTML → PDF) disponible desde pymupdf>=1.21.
 """
+
 from __future__ import annotations
 
 import html as _html
 import io
 
 import pymupdf as fitz  # PyMuPDF >= 1.24
-
 
 # ---------------------------------------------------------------------------
 # CSS
@@ -98,6 +98,7 @@ li {
 # ---------------------------------------------------------------------------
 # HTML builders
 # ---------------------------------------------------------------------------
+
 
 def _e(text: str) -> str:
     """Escapa caracteres HTML."""
@@ -225,6 +226,7 @@ def _section_skills(skills: dict) -> str:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+
 def render_normalized_cv(normalized_cv: dict) -> bytes:
     """
     Recibe el normalized_cv dict y devuelve los bytes del PDF en estilo BBLABS.
@@ -238,15 +240,17 @@ def render_normalized_cv(normalized_cv: dict) -> bytes:
 
     years_str = ""
     if years_exp is not None:
-        years_str = f"<p class=\"meta-line\">{years_exp} years of professional experience</p>"
+        years_str = f'<p class="meta-line">{years_exp} years of professional experience</p>'
 
-    sections = "".join([
-        _section_education(normalized_cv.get("education", [])),
-        _section_experience(normalized_cv.get("experience", [])),
-        _section_certifications(normalized_cv.get("certifications", [])),
-        _section_languages(normalized_cv.get("languages", [])),
-        _section_skills(normalized_cv.get("technical_skills", {})),
-    ])
+    sections = "".join(
+        [
+            _section_education(normalized_cv.get("education", [])),
+            _section_experience(normalized_cv.get("experience", [])),
+            _section_certifications(normalized_cv.get("certifications", [])),
+            _section_languages(normalized_cv.get("languages", [])),
+            _section_skills(normalized_cv.get("technical_skills", {})),
+        ]
+    )
 
     html_body = f"""
 <html>

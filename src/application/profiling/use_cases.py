@@ -12,6 +12,7 @@ de aqui, para no tener que cachear nada entre el disparo de la llamada y ese
 momento — se vuelve a leer QuestionSet/HiringProcess por `run_id`, que ya viaja
 en la URL del webhook.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -63,10 +64,9 @@ class InitiateProfilingCallUseCase:
             )
 
         active_calls = self.db.execute(
-            select(func.count(ProfilingRun.id))
-            .join(ProcessCandidate, ProfilingRun.process_candidate_id == ProcessCandidate.id)
-            .where(ProcessCandidate.process_id == process.id)
-            .where(ProfilingRun.status.in_(_ACTIVE_CALL_STATUSES))
+            select(func.count(ProfilingRun.id)).where(
+                ProfilingRun.status.in_(_ACTIVE_CALL_STATUSES)
+            )
         ).scalar_one()
         HiringProcessRules.enforce_max_concurrent_calls(active_calls, settings.max_concurrent_calls)
 

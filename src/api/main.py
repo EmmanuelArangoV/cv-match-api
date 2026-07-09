@@ -14,6 +14,7 @@ from src.api.v1 import (
     processes,
     profiling,
     question_sets,
+    users,
     webhooks,
 )
 from src.config import settings
@@ -48,6 +49,7 @@ app.add_middleware(
 
 
 # Manejadores de excepciones de dominio → HTTP
+
 
 @app.exception_handler(UnauthorizedException)
 async def unauthorized_handler(_: Request, exc: UnauthorizedException) -> JSONResponse:
@@ -90,6 +92,7 @@ app.include_router(profiling.router, prefix="/api/v1")
 app.include_router(profiling.global_router, prefix="/api/v1")
 app.include_router(metrics.router, prefix="/api/v1")
 app.include_router(ai_config.router, prefix="/api/v1")
+app.include_router(users.router, prefix="/api/v1")
 
 if not settings.is_production:
     app.include_router(debug.router, prefix="/api/v1")

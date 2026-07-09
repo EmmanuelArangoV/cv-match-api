@@ -6,9 +6,7 @@ from sqlalchemy.orm import selectinload
 
 from src.infrastructure.db.models import (
     Candidate,
-    CandidateStatus,
     ProcessCandidate,
-    WhatsAppConsentStatus,
 )
 
 
@@ -17,15 +15,11 @@ class CandidateRepository:
         self._db = db
 
     async def find_candidate_by_id(self, candidate_id: uuid.UUID) -> Candidate | None:
-        result = await self._db.execute(
-            select(Candidate).where(Candidate.id == candidate_id)
-        )
+        result = await self._db.execute(select(Candidate).where(Candidate.id == candidate_id))
         return result.scalar_one_or_none()
 
     async def find_by_email(self, email: str) -> Candidate | None:
-        result = await self._db.execute(
-            select(Candidate).where(Candidate.email == email)
-        )
+        result = await self._db.execute(select(Candidate).where(Candidate.email == email))
         return result.scalar_one_or_none()
 
     async def find_by_cv_file_hash(self, file_hash: str) -> Candidate | None:
@@ -46,9 +40,7 @@ class CandidateRepository:
         await self._db.refresh(pc)
         return pc
 
-    async def find_process_candidates(
-        self, process_id: uuid.UUID
-    ) -> list[ProcessCandidate]:
+    async def find_process_candidates(self, process_id: uuid.UUID) -> list[ProcessCandidate]:
         result = await self._db.execute(
             select(ProcessCandidate)
             .where(ProcessCandidate.process_id == process_id)
@@ -57,9 +49,7 @@ class CandidateRepository:
         )
         return list(result.scalars().all())
 
-    async def find_process_candidate_by_id(
-        self, pc_id: uuid.UUID
-    ) -> ProcessCandidate | None:
+    async def find_process_candidate_by_id(self, pc_id: uuid.UUID) -> ProcessCandidate | None:
         result = await self._db.execute(
             select(ProcessCandidate)
             .where(ProcessCandidate.id == pc_id)
@@ -71,8 +61,7 @@ class CandidateRepository:
         self, process_id: uuid.UUID, candidate_id: uuid.UUID
     ) -> ProcessCandidate | None:
         result = await self._db.execute(
-            select(ProcessCandidate)
-            .where(
+            select(ProcessCandidate).where(
                 ProcessCandidate.process_id == process_id,
                 ProcessCandidate.candidate_id == candidate_id,
             )

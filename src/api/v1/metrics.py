@@ -84,8 +84,7 @@ async def get_metrics_dashboard(
         .order_by("day")
     )
     daily_costs = [
-        {"date": day.date().isoformat(), "cost": float(total)}
-        for day, total in daily_result.all()
+        {"date": day.date().isoformat(), "cost": float(total)} for day, total in daily_result.all()
     ]
 
     return {

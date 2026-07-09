@@ -5,6 +5,7 @@ Precedencia: HiringProcess.voice_override_* (si no es None) > QuestionSet.defaul
 es None) > settings.elevenlabs_agent_id como unico fallback (el resto queda en None para que
 ElevenLabs use lo configurado en el dashboard del agente).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

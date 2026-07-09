@@ -6,6 +6,7 @@ Dispara la llamada directamente contra la API REST de Twilio con AMD sincrono
 confirmo que contesto un humano, y los buzones de voz no generan costo de agente.
 Patron tomado del proyecto de referencia RiwiCalls/SofIA (twilio/client.js).
 """
+
 import logging
 
 from twilio.request_validator import RequestValidator

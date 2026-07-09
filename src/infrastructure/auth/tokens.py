@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from jose import JWTError, jwt
 
@@ -11,7 +11,7 @@ _REFRESH_TTL_SECONDS = 7 * 24 * 60 * 60  # 7 días
 
 
 def create_access_token(user_id: str, role: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
+    expire = datetime.now(UTC) + timedelta(minutes=settings.access_token_expire_minutes)
     payload = {"sub": user_id, "role": role, "exp": expire}
     return jwt.encode(payload, settings.app_secret_key, algorithm=_ALGORITHM)
 

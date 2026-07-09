@@ -17,13 +17,13 @@ _TRANSITIONS: dict[ProcessStatus, set[ProcessStatus]] = {
     ProcessStatus.MATCH_DONE: {
         ProcessStatus.PROFILING_CONFIGURED,
         ProcessStatus.MATCH_PROCESSING,  # reprocesar con nuevo JD
-        ProcessStatus.CVS_UPLOADED,      # cargar más CVs
+        ProcessStatus.CVS_UPLOADED,  # cargar más CVs
         ProcessStatus.CLOSED,
     },
     ProcessStatus.PROFILING_CONFIGURED: {
         ProcessStatus.PROFILING_ACTIVE,
         ProcessStatus.MATCH_PROCESSING,  # cambió el JD
-        ProcessStatus.CVS_UPLOADED,      # cargar más CVs
+        ProcessStatus.CVS_UPLOADED,  # cargar más CVs
         ProcessStatus.CLOSED,
     },
     ProcessStatus.PROFILING_ACTIVE: {
@@ -42,7 +42,6 @@ _TRANSITIONS: dict[ProcessStatus, set[ProcessStatus]] = {
 
 
 class HiringProcessStateMachine:
-
     @staticmethod
     def transition(current: ProcessStatus, target: ProcessStatus) -> ProcessStatus:
         allowed = _TRANSITIONS.get(current, set())

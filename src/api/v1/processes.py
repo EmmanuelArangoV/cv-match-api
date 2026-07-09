@@ -13,7 +13,6 @@ from sqlalchemy.orm import selectinload
 from src.api.deps import (
     RequireRecruiter,
     RequireRecruiterWithQuery,
-    RequireTALeader,
     get_current_user,
 )
 from src.application.hiring_process.jd_parse_usecase import ParseJobDescriptionUseCase
@@ -32,6 +31,7 @@ from src.infrastructure.storage import r2_client
 # ---------------------------------------------------------------------------
 # Text extraction helpers
 # ---------------------------------------------------------------------------
+
 
 def _extract_text_from_pdf(data: bytes) -> str:
     doc = fitz.open(stream=data, filetype="pdf")
@@ -53,9 +53,8 @@ def _extract_text(data: bytes, filename: str) -> str:
         return _extract_text_from_docx(data)
     if ext == "txt":
         return data.decode("utf-8", errors="replace").strip()
-    raise BusinessRuleException(
-        f"Formato '{ext}' no soportado. Usa PDF, DOCX o TXT."
-    )
+    raise BusinessRuleException(f"Formato '{ext}' no soportado. Usa PDF, DOCX o TXT.")
+
 
 router = APIRouter(prefix="/processes", tags=["Processes"])
 
@@ -63,6 +62,7 @@ router = APIRouter(prefix="/processes", tags=["Processes"])
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
+
 
 class CreateProcessRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
@@ -96,9 +96,22 @@ class UpdateVoiceConfigRequest(BaseModel):
     voice_override_tts_similarity_boost: float | None = None
 
 
+class UpdateProcessRequest(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=255)
+    job_title: str | None = Field(None, min_length=1, max_length=255)
+    area: str | None = Field(None, min_length=1, max_length=100)
+    seniority: str | None = Field(None, min_length=1, max_length=50)
+    budget_max_usd: float | None = Field(None, ge=0)
+
+
+class UpdateProcessStatusRequest(BaseModel):
+    status: ProcessStatus
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.post("", status_code=201)
 async def create_process(
@@ -205,12 +218,16 @@ async def get_process(
         "job_description": {
             "jd_id": str(active_jd.id),
             "version": active_jd.version,
-            "text_preview": active_jd.jd_raw_text[:300] + "..." if len(active_jd.jd_raw_text) > 300 else active_jd.jd_raw_text,
+            "text_preview": active_jd.jd_raw_text[:300] + "..."
+            if len(active_jd.jd_raw_text) > 300
+            else active_jd.jd_raw_text,
             "jd_raw_text": active_jd.jd_raw_text,
             "jd_file_url": (active_jd.structured_jd or {}).get("jd_file_url"),
             "original_filename": (active_jd.structured_jd or {}).get("original_filename"),
             "created_at": active_jd.created_at.isoformat(),
-        } if active_jd else None,
+        }
+        if active_jd
+        else None,
         "created_at": process.created_at.isoformat(),
         "updated_at": process.updated_at.isoformat(),
     }
@@ -381,8 +398,14 @@ async def upload_job_description_file(
     jd_id = uuid.uuid4()
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "pdf"
     r2_key = f"jds/{process_id}/{jd_id}.{ext}"
-    content_type_map = {"pdf": "application/pdf", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "txt": "text/plain"}
-    await r2_client.upload_file(r2_key, content, content_type_map.get(ext, "application/octet-stream"))
+    content_type_map = {
+        "pdf": "application/pdf",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "txt": "text/plain",
+    }
+    await r2_client.upload_file(
+        r2_key, content, content_type_map.get(ext, "application/octet-stream")
+    )
 
     jd = JobDescription(
         id=jd_id,
@@ -437,3 +460,195 @@ async def get_job_description_file(
 
     presigned = await r2_client.generate_presigned_url(r2_key, expires_in=3600)
     return RedirectResponse(url=presigned, status_code=302)
+
+
+@router.patch("/{process_id}", response_model=dict)
+async def update_process(
+    process_id: uuid.UUID,
+    body: UpdateProcessRequest,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    process = await db.get(HiringProcess, process_id)
+    if not process:
+        raise NotFoundException("Proceso no encontrado")
+
+    HiringProcessRules.require_active_process(ProcessStatus(process.status))
+
+    update_data = {k: v for k, v in body.model_dump().items() if v is not None}
+    for field, value in update_data.items():
+        setattr(process, field, value)
+
+    await db.commit()
+    await db.refresh(process)
+
+    return {
+        "process_id": str(process.id),
+        "name": process.name,
+        "job_title": process.job_title,
+        "area": process.area,
+        "seniority": process.seniority,
+        "status": process.status,
+        "budget_max_usd": float(process.budget_max_usd),
+    }
+
+
+@router.patch("/{process_id}/status", response_model=dict)
+async def update_process_status(
+    process_id: uuid.UUID,
+    body: UpdateProcessStatusRequest,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    from src.domain.hiring_process.state_machine import HiringProcessStateMachine
+
+    process = await db.get(HiringProcess, process_id)
+    if not process:
+        raise NotFoundException("Proceso no encontrado")
+
+    new_status = HiringProcessStateMachine.transition(ProcessStatus(process.status), body.status)
+    process.status = new_status.value
+    await db.commit()
+    await db.refresh(process)
+
+    return {
+        "process_id": str(process.id),
+        "status": process.status,
+    }
+
+
+@router.get("/{process_id}/metrics", response_model=dict)
+async def get_process_metrics(
+    process_id: uuid.UUID,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    from sqlalchemy import func
+
+    from src.infrastructure.db.models import CostLog, ProcessCandidate
+
+    process = await db.get(HiringProcess, process_id)
+    if not process:
+        raise NotFoundException("Proceso no encontrado")
+
+    # Counts by status
+    status_query = (
+        select(ProcessCandidate.status, func.count())
+        .where(ProcessCandidate.process_id == process_id)
+        .group_by(ProcessCandidate.status)
+    )
+    status_result = await db.execute(status_query)
+    status_counts = {k: v for k, v in status_result.all()}
+
+    # Counts by match category
+    match_query = (
+        select(ProcessCandidate.match_category, func.count())
+        .where(
+            ProcessCandidate.process_id == process_id, ProcessCandidate.match_category.isnot(None)
+        )
+        .group_by(ProcessCandidate.match_category)
+    )
+    match_result = await db.execute(match_query)
+    match_counts = {k: v for k, v in match_result.all()}
+
+    # Total cost
+    cost_query = select(func.sum(CostLog.estimated_cost)).where(CostLog.process_id == process_id)
+    cost_result = await db.execute(cost_query)
+    total_cost = cost_result.scalar() or 0.0
+
+    return {
+        "process_id": str(process.id),
+        "total_cvs": sum(status_counts.values()),
+        "status_distribution": status_counts,
+        "match_distribution": match_counts,
+        "total_cost_usd": float(total_cost),
+        "budget_max_usd": float(process.budget_max_usd),
+    }
+
+
+@router.get("/{process_id}/job-descriptions", response_model=list[dict])
+async def list_job_descriptions(
+    process_id: uuid.UUID,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    process = await db.get(HiringProcess, process_id)
+    if not process:
+        raise NotFoundException("Proceso no encontrado")
+
+    result = await db.execute(
+        select(JobDescription)
+        .where(JobDescription.process_id == process_id)
+        .order_by(JobDescription.version.desc())
+    )
+    jds = list(result.scalars().all())
+
+    return [
+        {
+            "jd_id": str(jd.id),
+            "version": jd.version,
+            "text_preview": jd.jd_raw_text[:300] + "..."
+            if len(jd.jd_raw_text) > 300
+            else jd.jd_raw_text,
+            "jd_file_url": (jd.structured_jd or {}).get("jd_file_url"),
+            "original_filename": (jd.structured_jd or {}).get("original_filename"),
+            "created_at": jd.created_at.isoformat(),
+        }
+        for jd in jds
+    ]
+
+
+@router.get("/{process_id}/export/ranking")
+async def export_ranking(
+    process_id: uuid.UUID,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db)
+) -> StreamingResponse:
+    process = await db.get(HiringProcess, process_id)
+    if not process:
+        raise NotFoundException("Proceso no encontrado")
+
+    query = select(ProcessCandidate).where(ProcessCandidate.process_id == process_id).order_by(ProcessCandidate.match_score.desc().nullslast())
+    result = await db.execute(query)
+    candidates = result.scalars().all()
+
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "Email", "Status", "Match Score", "Match Category", "Profiling Score", "Created At"])
+    for c in candidates:
+        email = c.candidate.email if c.candidate else ""
+        writer.writerow([str(c.id), email, c.status, c.match_score, c.match_category, c.profiling_score, c.created_at])
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=ranking_{process_id}.csv"}
+    )
+
+@router.get("/{process_id}/export/costs")
+async def export_costs(
+    process_id: uuid.UUID,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db)
+) -> StreamingResponse:
+    process = await db.get(HiringProcess, process_id)
+    if not process:
+        raise NotFoundException("Proceso no encontrado")
+
+    query = select(CostLog).where(CostLog.process_id == process_id).order_by(CostLog.created_at.desc())
+    result = await db.execute(query)
+    logs = result.scalars().all()
+
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "Action", "Provider", "Estimated Cost", "Created At"])
+    for log in logs:
+        writer.writerow([str(log.id), log.action, log.provider, log.estimated_cost, log.created_at])
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=costs_{process_id}.csv"}
+    )

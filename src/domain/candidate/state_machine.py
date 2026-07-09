@@ -49,7 +49,6 @@ _TRANSITIONS: dict[CandidateStatus, set[CandidateStatus]] = {
 
 
 class CandidateStateMachine:
-
     @staticmethod
     def transition(current: CandidateStatus, target: CandidateStatus) -> CandidateStatus:
         allowed = _TRANSITIONS.get(current, set())

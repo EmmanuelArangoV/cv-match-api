@@ -3,6 +3,7 @@ Prompts de OpenAI para RIWI MATCH.
 - CV_EXTRACTION_PROMPT: extracción y normalización de CVs (gpt-4o vision).
 - build_match_user_message: construcción del mensaje de match CV vs JD.
 """
+
 from __future__ import annotations
 
 import json
@@ -212,13 +213,16 @@ def build_match_messages(
     normalized_cv: dict,
     jd_text: str,
     weights: dict,
+    system_prompt: str = None,
+    user_template: str = None,
 ) -> list[dict]:
     """
     Builds the messages list for the OpenAI chat completions API.
     weights must have keys: technical_skills, relevant_experience, seniority,
     industry_domain, languages, education_certifications (all integers summing to 100).
     """
-    user_content = _MATCH_USER_TEMPLATE.format(
+    template = user_template or _MATCH_USER_TEMPLATE
+    user_content = template.format(
         jd_text=jd_text,
         normalized_cv_json=json.dumps(normalized_cv, ensure_ascii=False, indent=2),
         w_technical_skills=weights["technical_skills"],
@@ -229,7 +233,7 @@ def build_match_messages(
         w_education_certifications=weights["education_certifications"],
     )
     return [
-        {"role": "system", "content": _MATCH_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt or _MATCH_SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
     ]
 
@@ -293,6 +297,10 @@ business rules:
 - If 1 critical question is failed, probability is MEDIUM at most.
 - Otherwise, rate HIGH, MEDIUM, or LOW based on the overall quality of answers.
 
+You must also detect if the candidate gave verbal consent to be recorded and \
+interviewed at the beginning of the call. If they agreed, set `verbal_consent` \
+to `ACCEPTED`. If they refused or objected, set it to `REJECTED`.
+
 Return ONLY valid JSON with exactly this schema:
 
 {
@@ -308,7 +316,19 @@ Return ONLY valid JSON with exactly this schema:
     }
   ],
   "advancement_probability": "<HIGH | MEDIUM | LOW>",
-  "advancement_explanation": "<string explaining the probability choice>"
+  "advancement_explanation": "<string explaining the probability choice>",
+  "verbal_consent": "<ACCEPTED | REJECTED>"
 }
 
+"""
+
+
+JD_ENHANCEMENT_SYSTEM_PROMPT = """
+Eres un experto reclutador IT y especialista en Employer Branding. Tu tarea es recibir un borrador de un 'Job Description' (JD) y devolver una version significativamente mejorada, estructurada y persuasiva.
+
+Directrices:
+1. Mejora el tono para que suene profesional pero atractivo y moderno.
+2. Estructura claramente en secciones (por ejemplo: Acerca del rol, Responsabilidades, Requisitos Excluyentes, Requisitos Deseables, Beneficios).
+3. Deduce inteligentemente las habilidades blandas y duras necesarias que no se mencionen explicitamente, pero que sean estandares para el rol sugerido (sin inventar un stack tecnologico completamente diferente).
+4. El resultado final debe estar en formato Markdown.
 """

@@ -54,6 +54,7 @@ def _serialize_setting(s: GlobalBusinessSetting) -> dict:
 
 # ─── Modelos de IA ─────────────────────────────────────────────────────────────
 
+
 @router.get("/models")
 async def list_models(
     current_user: User = Depends(get_current_user),
@@ -115,6 +116,7 @@ async def activate_model(
 
 # ─── Prompts (append-only) ──────────────────────────────────────────────────────
 
+
 @router.get("/prompts")
 async def list_prompts(
     current_user: User = Depends(get_current_user),
@@ -162,6 +164,7 @@ async def create_prompt(
 
 # ─── Configuración global del negocio ────────────────────────────────────────────
 
+
 @router.get("/global-settings")
 async def list_global_settings(
     current_user: User = Depends(get_current_user),
@@ -203,4 +206,7 @@ async def update_global_setting(
 
     await db.commit()
     await db.refresh(setting)
+    from src.infrastructure.cache.redis_client import redis_client
+    if redis_client:
+        await redis_client.delete(f"global_setting:{setting_key}")
     return _serialize_setting(setting)

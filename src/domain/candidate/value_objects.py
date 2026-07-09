@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 
 from src.domain.shared.exceptions import BusinessRuleException
@@ -21,7 +21,9 @@ class MatchScore(ValueObject):
 
     def _validate(self) -> None:
         if not (0.0 <= self.value <= 100.0):
-            raise BusinessRuleException(f"El match score debe estar entre 0 y 100, recibido: {self.value}")
+            raise BusinessRuleException(
+                f"El match score debe estar entre 0 y 100, recibido: {self.value}"
+            )
 
     @property
     def category(self) -> str:
@@ -42,7 +44,7 @@ class AvailabilityPreference(ValueObject):
     type: AvailabilityType
     date: date | None = None
     start_time: str | None = None  # "HH:MM"
-    end_time: str | None = None    # "HH:MM"
+    end_time: str | None = None  # "HH:MM"
 
     def _validate(self) -> None:
         if self.type == AvailabilityType.SPECIFIC_WINDOW:

@@ -2,12 +2,12 @@
 Reglas de negocio del dominio HiringProcess.
 Cada método corresponde a una o más reglas del PRD (RB-001 a RB-010).
 """
+
 from src.domain.shared.exceptions import BusinessRuleException
 from src.infrastructure.db.models import ProcessStatus, WhatsAppConsentStatus
 
 
 class HiringProcessRules:
-
     @staticmethod
     def require_job_description(has_jd: bool) -> None:
         """RB-001: No se puede ejecutar match sin Job Description."""

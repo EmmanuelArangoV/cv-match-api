@@ -1,4 +1,5 @@
 """Endpoints de debug — solo disponibles en APP_ENV=development."""
+
 from __future__ import annotations
 
 import uuid
@@ -17,10 +18,10 @@ from src.infrastructure.db.models import (
     HiringProcess,
     ProcessCandidate,
     ProcessStatus,
+    User,
     UserRole,
     UserStatus,
     WhatsAppConsentStatus,
-    User,
 )
 
 router = APIRouter(prefix="/debug", tags=["Debug (dev only)"])
@@ -60,6 +61,7 @@ async def seed_whatsapp_test(
     recruiter = result.scalar_one_or_none()
     if not recruiter:
         import bcrypt as _bcrypt
+
         recruiter = User(
             id=uuid.uuid4(),
             name="Recruiter",
@@ -112,7 +114,7 @@ async def seed_whatsapp_test(
         "candidate_id": str(candidate.id),
         "process_candidate_id": str(pc.id),
         "phone_registered": body.phone,
-        "next": f"Ahora simula un mensaje con POST /api/v1/debug/simulate-whatsapp-message",
+        "next": "Ahora simula un mensaje con POST /api/v1/debug/simulate-whatsapp-message",
     }
 
 

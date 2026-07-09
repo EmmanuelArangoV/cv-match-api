@@ -97,6 +97,7 @@ class UpdateQuestionRequest(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _serialize_question(q: ProfilingQuestion) -> dict:
     return {
         "id": str(q.id),
@@ -138,7 +139,9 @@ def _serialize_set(qs: QuestionSet, include_questions: bool = False) -> dict:
     return data
 
 
-async def _get_set_or_404(qs_id: uuid.UUID, db: AsyncSession, with_questions: bool = False) -> QuestionSet:
+async def _get_set_or_404(
+    qs_id: uuid.UUID, db: AsyncSession, with_questions: bool = False
+) -> QuestionSet:
     query = select(QuestionSet).where(QuestionSet.id == qs_id)
     if with_questions:
         query = query.options(selectinload(QuestionSet.questions))
@@ -152,6 +155,7 @@ async def _get_set_or_404(qs_id: uuid.UUID, db: AsyncSession, with_questions: bo
 # ---------------------------------------------------------------------------
 # Endpoints — Question Sets
 # ---------------------------------------------------------------------------
+
 
 @router.post("", status_code=201)
 async def create_question_set(
@@ -231,7 +235,8 @@ async def update_question_set(
     current_user: User = RequireRecruiter,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    qs = await _get_set_or_404(question_set_id, db)
+    qs = await _get_set_or_404(question_set_id, db, with_questions=True)
+    qs = await _clone_question_set_if_active(qs, db)
 
     if body.name is not None:
         qs.name = body.name
@@ -239,7 +244,9 @@ async def update_question_set(
         qs.description = body.description
     if body.status is not None:
         if body.status not in VALID_SET_STATUSES:
-            raise BusinessRuleException(f"Estado inválido: '{body.status}'. Valores válidos: {sorted(VALID_SET_STATUSES)}")
+            raise BusinessRuleException(
+                f"Estado inválido: '{body.status}'. Valores válidos: {sorted(VALID_SET_STATUSES)}"
+            )
         qs.status = body.status
 
     for field in (
@@ -277,6 +284,7 @@ async def delete_question_set(
 # Endpoints — Questions dentro de un set
 # ---------------------------------------------------------------------------
 
+
 @router.post("/{question_set_id}/questions", status_code=201)
 async def add_question(
     question_set_id: uuid.UUID,
@@ -285,6 +293,7 @@ async def add_question(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     qs = await _get_set_or_404(question_set_id, db, with_questions=True)
+    qs = await _clone_question_set_if_active(qs, db)
 
     if body.type not in VALID_QUESTION_TYPES:
         raise BusinessRuleException(
@@ -326,9 +335,25 @@ async def update_question(
             ProfilingQuestion.question_set_id == question_set_id,
         )
     )
-    pq: ProfilingQuestion | None = result.scalar_one_or_none()
-    if not pq:
+    original_pq: ProfilingQuestion | None = result.scalar_one_or_none()
+    if not original_pq:
         raise NotFoundException("Pregunta no encontrada")
+
+    qs = await _get_set_or_404(question_set_id, db, with_questions=True)
+    qs = await _clone_question_set_if_active(qs, db)
+
+    pq = next((q for q in qs.questions if q.id == original_pq.id), None)
+    if not pq:
+        pq = next(
+            (
+                q
+                for q in qs.questions
+                if q.text == original_pq.text and q.order_index == original_pq.order_index
+            ),
+            None,
+        )
+        if not pq:
+            raise NotFoundException("Pregunta no encontrada tras versionamiento")
 
     if body.order_index is not None:
         pq.order_index = body.order_index
@@ -371,8 +396,82 @@ async def delete_question(
             ProfilingQuestion.question_set_id == question_set_id,
         )
     )
-    pq: ProfilingQuestion | None = result.scalar_one_or_none()
-    if not pq:
+    original_pq: ProfilingQuestion | None = result.scalar_one_or_none()
+    if not original_pq:
         raise NotFoundException("Pregunta no encontrada")
+
+    qs = await _get_set_or_404(question_set_id, db, with_questions=True)
+    qs = await _clone_question_set_if_active(qs, db)
+
+    pq = next((q for q in qs.questions if q.id == original_pq.id), None)
+    if not pq:
+        pq = next(
+            (
+                q
+                for q in qs.questions
+                if q.text == original_pq.text and q.order_index == original_pq.order_index
+            ),
+            None,
+        )
+        if not pq:
+            raise NotFoundException("Pregunta no encontrada tras versionamiento")
     await db.delete(pq)
     await db.commit()
+
+
+async def _clone_question_set_if_active(qs: QuestionSet, db: AsyncSession) -> QuestionSet:
+    from sqlalchemy import select
+
+    from src.infrastructure.db.models import HiringProcess, ProfilingQuestion, QuestionSetStatus
+
+    in_use = await db.execute(
+        select(HiringProcess.id).where(HiringProcess.question_set_id == qs.id).limit(1)
+    )
+    is_in_use = in_use.scalar_one_or_none() is not None
+
+    if qs.status == QuestionSetStatus.ACTIVE.value or is_in_use:
+        new_qs = QuestionSet(
+            name=qs.name,
+            description=qs.description,
+            version=qs.version + 1,
+            status=QuestionSetStatus.DRAFT.value,
+            created_by=qs.created_by,
+            default_agent_id=qs.default_agent_id,
+            default_system_prompt=qs.default_system_prompt,
+            default_first_message=qs.default_first_message,
+            default_language=qs.default_language,
+            default_llm_model=qs.default_llm_model,
+            default_voice_id=qs.default_voice_id,
+            default_tts_stability=qs.default_tts_stability,
+            default_tts_speed=qs.default_tts_speed,
+            default_tts_similarity_boost=qs.default_tts_similarity_boost,
+        )
+        db.add(new_qs)
+        await db.flush()  # get new_qs.id
+
+        # Clone questions
+        for q in qs.questions:
+            new_q = ProfilingQuestion(
+                question_set_id=new_qs.id,
+                order_index=q.order_index,
+                text=q.text,
+                type=q.type,
+                expected_answer=q.expected_answer,
+                positive_keywords=list(q.positive_keywords) if q.positive_keywords else [],
+                risk_keywords=list(q.risk_keywords) if q.risk_keywords else [],
+                weight=q.weight,
+                is_critical=q.is_critical,
+                eval_criteria=q.eval_criteria,
+            )
+            db.add(new_q)
+
+        await db.flush()
+        # Refresh the new_qs to have the questions loaded
+        result = await db.execute(
+            select(QuestionSet)
+            .where(QuestionSet.id == new_qs.id)
+            .options(selectinload(QuestionSet.questions))
+        )
+        return result.scalar_one()
+
+    return qs

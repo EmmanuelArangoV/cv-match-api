@@ -1,6 +1,5 @@
 import uuid
 from decimal import Decimal
-from typing import Optional
 
 from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import RedirectResponse
@@ -17,8 +16,9 @@ from src.infrastructure.storage import r2_client
 
 
 class OverrideBody(BaseModel):
-    human_notes: Optional[str] = None
-    human_override_match: Optional[float] = None
+    human_notes: str | None = None
+    human_override_match: float | None = None
+
 
 router = APIRouter(prefix="/processes", tags=["Candidates"])
 
@@ -80,7 +80,9 @@ async def list_candidates(
         }
         # Profile fields from normalized CV
         profile = pc.candidate.normalized_cv or {}
-        entry["city"] = profile.get("location", "").split(",")[0].strip() if profile.get("location") else None
+        entry["city"] = (
+            profile.get("location", "").split(",")[0].strip() if profile.get("location") else None
+        )
         # Añadir resumen del match si ya fue procesado
         if explanation:
             entry["match_summary"] = explanation.get("summary")
@@ -135,7 +137,9 @@ async def get_candidate_detail(
             "strengths": explanation.get("strengths", []),
             "gaps": explanation.get("gaps", []),
             "breakdown": explanation.get("breakdown", {}),
-        } if pc.match_percentage else None,
+        }
+        if pc.match_percentage
+        else None,
     }
 
 
@@ -160,6 +164,8 @@ async def patch_candidate_override(
     elif body.human_override_match is None and "human_override_match" in body.model_fields_set:
         pc.human_override_match = None
 
+    from src.infrastructure.db.audit import record_audit
+    record_audit(db, current_user.id, "MANUAL_OVERRIDE", "ProcessCandidate", pc.id)
     await db.commit()
     return {"status": "updated"}
 
