@@ -60,13 +60,20 @@ def _extract_message_content(message: dict) -> tuple[str, str]:
 
     Tipos que manejamos:
     - text            → mensaje de texto libre del candidato
-    - interactive     → clic en botón de la plantilla (button_reply)
+    - button          → clic en botón de respuesta rápida de una plantilla (quick reply)
+    - interactive     → clic en botón de un mensaje interactivo (button_reply, list, etc.)
     """
     from_phone = message.get("from", "")
     msg_type = message.get("type", "")
 
     if msg_type == "text":
         return from_phone, message.get("text", {}).get("body", "")
+
+    if msg_type == "button":
+        # El candidato hizo clic en un boton de quick-reply de la plantilla
+        # (p.ej. "Autorizo llamada" / "No estoy interesado") — distinto de
+        # "interactive", Meta lo manda con este tipo para plantillas.
+        return from_phone, message.get("button", {}).get("text", "")
 
     if msg_type == "interactive":
         interactive = message.get("interactive", {})
