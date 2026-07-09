@@ -119,6 +119,7 @@ class AdvancementProbability(str, enum.Enum):
 class AITaskType(str, enum.Enum):
     CV_EXTRACTION = "CV_EXTRACTION"
     CV_MATCH = "CV_MATCH"
+    JD_ENHANCEMENT = "JD_ENHANCEMENT"
     VOICE_PROFILING = "VOICE_PROFILING"
     WHATSAPP_MESSAGE = "WHATSAPP_MESSAGE"
 
@@ -133,6 +134,7 @@ class AIProvider(str, enum.Enum):
 class OperationType(str, enum.Enum):
     CV_EXTRACTION = "CV_EXTRACTION"
     CV_MATCH = "CV_MATCH"
+    JD_ENHANCEMENT = "JD_ENHANCEMENT"
     VOICE_CALL = "VOICE_CALL"
     VOICE_TRANSCRIPTION = "VOICE_TRANSCRIPTION"
     WHATSAPP_MESSAGE = "WHATSAPP_MESSAGE"

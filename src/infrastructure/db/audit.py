@@ -1,6 +1,9 @@
 ﻿import uuid
+
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from src.infrastructure.db.models import AuditLog
+
 
 def record_audit(
     session: AsyncSession,
