@@ -1,57 +1,82 @@
 # 🚀 Estado Actual del Proyecto: RIWI MATCH (Backend)
 
-Este documento resume el progreso actual del desarrollo, detallando exactamente qué piezas ya están operativas en producción (o listas para ello), cuáles están funcionando bajo simulación (mock), y cuáles son las integraciones que aún están pendientes por desarrollar o configurar.
+> Actualizado el **2026-07-08** tras una auditoría código-vs-documentación. La versión anterior de
+> este documento describía la integración de voz como mock: **ya no es así** — la integración es
+> real desde los commits `c5f24bd`, `04dded4` y `ca48351`. El plan detallado para cerrar lo que
+> falta está en **`PLAN_MVP_100.md`**, en la raíz del monorepo (repo padre `RiwiMatch`, no dentro
+> de este submódulo).
 
 ---
 
-## ✅ 1. Lo que ya hace y FUNCIONA completamente
+## ✅ 1. Lo que funciona completo y con integraciones reales
 
-Estas piezas de la arquitectura ya están programadas, estructuradas y listas para operar con datos reales:
-
-1. **Subida y Deduplicación de CVs (`use_cases.py`):**
-   - El sistema carga hasta 50 CVs en lote, procesándolos de manera asíncrona.
-   - Antes de enviar a parsear, calcula el hash `SHA-256` del archivo para identificar si un CV exacto ya fue subido, ahorrando costos de IA e impidiendo procesamientos duplicados.
-2. **Parseo de CVs y Vectorización (`parse_cv.py`):**
-   - Usa `gpt-4o` (incluyendo su capacidad de *Vision* para imágenes) para extraer información estructurada (habilidades, experiencia, años, educación).
-   - Calcula y almacena en Supabase un **embedding vectorial** de OpenAI (`text-embedding-3-small`) usando `pgvector`, lo que permitirá futuras búsquedas semánticas.
-3. **Motor de Match (CV vs JD) (`run_match.py`):**
-   - Analiza la experiencia, habilidades, senioridad, y dominio contra la *Job Description*.
-   - Retorna un porcentaje de afinidad ponderado, fortalezas, y carencias ("gaps"), clasificando al candidato (`HIGH`, `MEDIUM`, `LOW`, `NOT_RECOMMENDED`).
-   - El costo de tokens y dinero se guarda automáticamente en la tabla de trazabilidad (`CostLog`).
-4. **Agente de WhatsApp y Webhooks (`whatsapp_message_usecase.py`):**
-   - Integración nativa con la API de Meta Business y seguridad HMAC verificada.
-   - Lee el intent del candidato ("sí, acepto", "no estoy interesado" desde botones o texto libre).
-   - Usa un agente conversacional (`gpt-4o`) configurado con reglas estrictas para responder dudas frecuentes (disponibilidad, legalidad, proceso) de forma cálida y profesional.
-   - Si el candidato acepta, **dispara automáticamente** la orquestación del *Voice Profiling*.
-
----
-
-## 🏗️ 2. Lo que "medio funciona" (Integración Estructural / Mocks)
-
-Estas piezas tienen toda la arquitectura construida (Webhooks, Tareas en Celery y Lógica de Base de Datos), pero actualmente **simulan** la conexión externa para facilitar el desarrollo local:
-
-1. **Orquestación de Llamadas Salientes (`profiling.py`):**
-   - **Flujo:** La base de datos y la máquina de estados ya hacen la transición del candidato a `PROFILING_CALLING`.
-   - **Simulación:** El archivo `twilio_client.py` actualmente tiene un "mock" que imprime en consola que está realizando la llamada en lugar de hacer el POST real a Twilio.
-2. **Webhooks de Profiling (`webhooks.py`):**
-   - **Twilio AMD (Answering Machine Detection):** El webhook `/api/v1/webhooks/twilio/amd` ya existe y tiene la lógica para colgar si es buzón o conectar a ElevenLabs si es humano, pero requiere exponer tu servidor local con `ngrok` para que Twilio pueda golpearlo realmente.
-   - **ElevenLabs Transcripción:** El webhook `/elevenlabs` ya sabe qué hacer cuando recibe la transcripción (encolar la evaluación de la IA), pero el cliente `elevenlabs_client.py` hoy retorna una transcripción *quemada/simulada* en código.
-3. **Evaluación Post-Profiling (`evaluate_profiling_transcription`):**
-   - El Celery task que toma el texto de la entrevista, lo cruza contra el cuestionario (`QuestionSet`) y le pide a OpenAI que genere el `AdvancementProbability` (`HIGH`/`MEDIUM`/`LOW`). Está listo, pero se alimenta de la transcripción simulada.
+1. **Auth (JWT + roles):** login, refresh con rotación, logout, roles ADMIN/RECRUITER/TA_LEADER,
+   estados ACTIVE/SUSPENDED, filtro por recruiter en procesos.
+2. **Procesos + JD:** CRUD de creación/listado/detalle, JD por texto o archivo (PDF/DOCX/TXT),
+   parseo de JD con IA (must-have / nice-to-have / deal-breakers), JD versionada inmutable,
+   pesos de match configurables por proceso (`match_weights_override`).
+3. **Carga y parseo de CVs:** hasta 50 por lote, deduplicación por SHA-256, upload a R2, extracción
+   con `gpt-4o` (incluida Vision para imágenes), embedding `text-embedding-3-small` en pgvector,
+   PDF normalizado, CostLog por extracción.
+4. **Motor de match:** pesos por 6 categorías, clasificación HIGH/MEDIUM/LOW/NOT_RECOMMENDED,
+   fortalezas/gaps/breakdown explicado, ranking, override humano con notas, CostLog por match.
+5. **WhatsApp (Meta Business, real):** plantilla de consentimiento, firma HMAC verificada, agente
+   conversacional con IA para dudas frecuentes, estados de consentimiento
+   PENDING/ACCEPTED/REJECTED/TIMEOUT, disparo automático del profiling al aceptar.
+6. **Llamadas de voz (Twilio + ElevenLabs, real — NO mock):** SDKs oficiales (`twilio>=9.0.0`,
+   `elevenlabs>=2.56.0`), AMD síncrono (si contesta un buzón se cuelga sin invocar a ElevenLabs),
+   `register_call` real, webhooks con firma verificada (Twilio y ElevenLabs), status-callback para
+   llamadas que nunca conectan, watchdog `check_stale_profiling_calls` vía Celery Beat, evaluación
+   post-llamada con `AdvancementProbability` (RB-006/007), RB-005 y RB-010 validados antes de
+   llamar, CostLog de voz, use cases en `src/application/profiling/`.
+7. **Question sets:** CRUD completo de sets y preguntas (tipos, pesos, keywords, criticidad,
+   criterios de evaluación), configuración de voz por defecto y override por proceso.
+8. **Configuración de IA (endpoints):** CRUD de modelos con exclusión mutua de activo, prompts
+   append-only, global_business_settings (`src/api/v1/ai_config.py`).
+9. **Métricas de costos:** dashboard agregado (total, por proceso, por usuario, por operación,
+   diario) en `src/api/v1/metrics.py`.
 
 ---
 
-## ⏳ 3. Integraciones y Tareas Faltantes
+## 🏗️ 2. Lo que existe pero está incompleto (parcial)
 
-Para que el backend alcance el 100% de la funcionalidad descrita en la arquitectura, quedan pendientes las siguientes tareas:
+1. **CostLog:** cubre CV, match y voz; falta registrar WhatsApp y la evaluación post-profiling.
+2. **Circuit breaker RB-010:** se aplica antes de las llamadas de voz, pero no antes de
+   `run_match` ni `parse_cv`.
+3. **Configuración de IA dinámica:** los endpoints existen, pero los workers usan `"gpt-4o"`
+   hardcodeado en vez de leer el modelo/prompt activo.
+4. **RB-005 (máx. 4 llamadas simultáneas):** se valida **por proceso**; el documento maestro lo
+   define **global**.
+5. **Consentimiento verbal en llamada:** la columna `call_consent_status` existe pero ningún flujo
+   la escribe.
+6. **Versionamiento de question sets:** el campo `version` existe, pero editar un set usado muta la
+   versión actual en vez de crear una nueva.
+7. **Métricas por proceso / vista Líder TA:** solo existe el dashboard de costos global.
+8. **Vista detalle de candidato:** falta exponer estado de profiling, respuestas capturadas
+   (`ProfilingAnswer`) y transcripción completa.
 
-### Trabajo para tu compañero (Twilio & ElevenLabs)
-1. **Conectar el cliente real de Twilio:** Reemplazar el `logger.info` en `twilio_client.py` por la llamada real `httpx.post` a la API de Twilio usando `TWILIO_ACCOUNT_SID`.
-2. **Conectar el Agente de ElevenLabs:** Twilio requiere conectarse vía WebSocket a ElevenLabs. Hay que asegurar que el Agent ID esté bien configurado en la plataforma de Eleven y expuesto en el `.env`.
+---
 
-### Tareas de Backend Pendientes
-1. **El "Circuit Breaker" de Costos (Regla RB-010):** Actualmente guardamos el costo (CostLog), pero falta agregar una validación que sume los costos por `HiringProcess` e impida encolar nuevas tareas a OpenAI si se superó el `budget_max_usd`.
-2. **Azure Document Intelligence (OCR Fuerte):** Hoy le enviamos imágenes a GPT-4o. Si la calidad del CV es muy mala o es un PDF muy largo, deberíamos implementar el cliente de Azure OCR como plan B (las credenciales ya están en el `.env`).
-3. **Estructurador Inteligente de Job Descriptions:** El endpoint `POST /processes/{process_id}/job-description` que toma texto libre de una vacante y lo rompe usando IA en "Must-haves", "Nice-to-haves" y "Deal-breakers" (actualmente el motor de Match asume que la BD ya tiene esta estructura).
-4. **Orquestador Temporal (Cron / Temporizador):** Mencionaste "por defecto a las 24 horas los que aceptaron". Hoy la llamada de Twilio se dispara *inmediatamente* tras el "sí, acepto". Se requerirá configurar Celery Beat o usar la bandera `countdown` de Celery para hacer el retraso de 24 horas en producción.
-5. **Conectar todo al Frontend (Next.js):** El UI debe consumir estos endpoints (autenticación JWT, creación de procesos, paneles de ranking de match).
+## ⏳ 3. Lo que falta por completo
+
+1. **CRUD de usuarios por API** — solo existen `scripts/create_admin.py` / `create_recruiter.py`.
+2. **`resolve_whatsapp_timeout`** — el consentimiento `PENDING` no pasa a `TIMEOUT` a las 24 h por
+   sí solo (única pieza del contrato de voz sin implementar).
+3. **Audit logs** — la tabla `AuditLog` existe pero ningún endpoint escribe en ella (criterio de
+   aceptación 15 del MVP, el único faltante).
+4. **Alertas de presupuesto (80/90/100%)** — RB-010 bloquea al 100% (solo en voz), sin alertas
+   proactivas.
+5. **Feedback loop** — marcar análisis de IA como correcto/parcial/incorrecto.
+6. **Editar / cerrar / archivar proceso por API** — las transiciones existen en la máquina de
+   estados pero no hay endpoints.
+7. **Endpoints de export/reportes (CSV)**.
+8. **Post-MVP (decidido, no olvidado):** RLS, SSE, Azure Document Intelligence (OCR plan B) —
+   justificación en `PLAN_MVP_100.md` §6.
+
+---
+
+## 🧪 4. Tests
+
+**22 tests unitarios**, todos del dominio de voz/profiling (máquina de estados del candidato,
+watchdog, resolver de config de voz, firmas de Twilio/ElevenLabs). Sin cobertura de auth, procesos,
+CVs, match, WhatsApp ni métricas. Objetivo del plan: 60+ tests (ver `PLAN_MVP_100.md` §5).
