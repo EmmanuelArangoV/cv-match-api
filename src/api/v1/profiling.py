@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 from src.api.deps import RequireRecruiter, get_current_user
 from src.domain.candidate.state_machine import CandidateStateMachine
 from src.domain.hiring_process.rules import HiringProcessRules
-from src.domain.shared.exceptions import NotFoundException
+from src.domain.shared.exceptions import NotFoundException, BusinessRuleException
 from src.infrastructure.db.database import get_db
 from src.infrastructure.db.models import (
     CandidateStatus,
@@ -169,3 +169,130 @@ async def list_all_profiling_runs(
         "total": len(runs),
         "profiling_runs": [_serialize_run(run, _candidate_name(run)) for run in runs],
     }
+
+
+from src.infrastructure.db.models import (
+    ProfilingAnswer,
+    ProfilingQuestion,
+    ProfilingRunStatus,
+)
+
+
+class OverrideProfilingRequest(BaseModel):
+    advancement_probability: str
+    advancement_explanation: str
+
+
+@global_router.get("/runs/{run_id}")
+async def get_profiling_run(
+    run_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    result = await db.execute(
+        select(ProfilingRun)
+        .where(ProfilingRun.id == run_id)
+        .options(
+            selectinload(ProfilingRun.process_candidate).selectinload(ProcessCandidate.candidate)
+        )
+    )
+    run = result.scalar_one_or_none()
+    if not run:
+        raise NotFoundException("ProfilingRun no encontrado")
+    return _serialize_run(run, _candidate_name(run))
+
+
+@global_router.get("/runs/{run_id}/answers")
+async def get_profiling_answers(
+    run_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    result = await db.execute(
+        select(ProfilingAnswer, ProfilingQuestion)
+        .join(ProfilingQuestion, ProfilingAnswer.question_id == ProfilingQuestion.id)
+        .where(ProfilingAnswer.profiling_run_id == run_id)
+        .order_by(ProfilingQuestion.order_index.asc())
+    )
+    rows = result.all()
+
+    answers = []
+    for ans, question in rows:
+        answers.append(
+            {
+                "id": str(ans.id),
+                "question": {
+                    "id": str(question.id),
+                    "text": question.text,
+                    "weight": question.weight,
+                    "is_critical": question.is_critical,
+                },
+                "transcription": ans.transcription,
+                "normalized_answer": ans.normalized_answer,
+                "evaluation_result": ans.evaluation_result,
+                "confidence_score": float(ans.confidence_score) if ans.confidence_score else None,
+                "requires_review": ans.requires_review,
+            }
+        )
+    return {"answers": answers}
+
+
+@global_router.post("/runs/{run_id}/cancel")
+async def cancel_profiling_run(
+    run_id: uuid.UUID,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    result = await db.execute(
+        select(ProfilingRun)
+        .where(ProfilingRun.id == run_id)
+        .options(selectinload(ProfilingRun.process_candidate))
+    )
+    run = result.scalar_one_or_none()
+    if not run:
+        raise NotFoundException("ProfilingRun no encontrado")
+
+    if run.status != ProfilingRunStatus.QUEUED.value:
+        raise BusinessRuleException("Solo se pueden cancelar llamadas en estado QUEUED")
+
+    run.status = ProfilingRunStatus.FAILED.value
+    pc = run.process_candidate
+    if pc:
+        pc.status = CandidateStateMachine.transition(
+            CandidateStatus(pc.status), CandidateStatus.PROFILING_FAILED
+        ).value
+
+    await db.commit()
+    return {"message": "Llamada cancelada correctamente"}
+
+
+@global_router.patch("/runs/{run_id}/override")
+async def override_profiling_run(
+    run_id: uuid.UUID,
+    body: OverrideProfilingRequest,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    result = await db.execute(
+        select(ProfilingRun)
+        .where(ProfilingRun.id == run_id)
+        .options(
+            selectinload(ProfilingRun.process_candidate).selectinload(ProcessCandidate.candidate)
+        )
+    )
+    run = result.scalar_one_or_none()
+    if not run:
+        raise NotFoundException("ProfilingRun no encontrado")
+
+    if (
+        run.status != ProfilingRunStatus.EVALUATED.value
+        and run.status != ProfilingRunStatus.COMPLETED.value
+    ):
+        raise BusinessRuleException("Solo se puede sobrescribir una llamada evaluada o completada")
+
+    run.advancement_probability = body.advancement_probability
+    run.advancement_explanation = body.advancement_explanation
+
+    await db.commit()
+    await db.refresh(run)
+    return _serialize_run(run, _candidate_name(run))

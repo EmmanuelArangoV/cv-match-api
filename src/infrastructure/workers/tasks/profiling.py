@@ -49,7 +49,7 @@ def start_profiling_call(self, process_candidate_id: str):
         except Exception as exc:
             db.rollback()
             logger.error(f"[profiling] error transitorio iniciando llamada: {exc}")
-            raise self.retry(exc=exc)
+            raise self.retry(exc=exc, max_retries=settings.max_call_attempts)
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60, name="retry_or_fail_profiling_call")
@@ -67,7 +67,7 @@ def retry_or_fail_profiling_call(self, profiling_run_id: str, reason: str):
         except Exception as exc:
             db.rollback()
             logger.error(f"[profiling] error transitorio reintentando llamada: {exc}")
-            raise self.retry(exc=exc)
+            raise self.retry(exc=exc, max_retries=settings.max_call_attempts)
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60, name="check_stale_profiling_calls")
@@ -125,7 +125,7 @@ def check_stale_profiling_calls(self):
         except Exception as exc:
             db.rollback()
             logger.error(f"[watchdog] error revisando llamadas atascadas: {exc}")
-            raise self.retry(exc=exc)
+            raise self.retry(exc=exc, max_retries=settings.max_call_attempts)
 
 
 @shared_task(
@@ -227,6 +227,7 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
             # transcripcion (ver src/api/v1/webhooks.py) — aqui solo calculamos el avance.
             profiling_run.advancement_probability = AdvancementProbability(advancement.level.value)
             profiling_run.advancement_explanation = advancement.explanation
+            profiling_run.call_consent_status = result_data.get("verbal_consent", "ACCEPTED")
 
             db.commit()
             return {"status": "EVALUATED", "advancement_probability": advancement.level.value}
@@ -234,4 +235,4 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
         except Exception as exc:
             db.rollback()
             logger.error(f"[profiling] error evaluando transcripcion: {exc}")
-            raise self.retry(exc=exc)
+            raise self.retry(exc=exc, max_retries=settings.max_call_attempts)

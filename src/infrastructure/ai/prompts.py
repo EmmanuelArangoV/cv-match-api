@@ -294,6 +294,10 @@ business rules:
 - If 1 critical question is failed, probability is MEDIUM at most.
 - Otherwise, rate HIGH, MEDIUM, or LOW based on the overall quality of answers.
 
+You must also detect if the candidate gave verbal consent to be recorded and \
+interviewed at the beginning of the call. If they agreed, set `verbal_consent` \
+to `ACCEPTED`. If they refused or objected, set it to `REJECTED`.
+
 Return ONLY valid JSON with exactly this schema:
 
 {
@@ -309,7 +313,8 @@ Return ONLY valid JSON with exactly this schema:
     }
   ],
   "advancement_probability": "<HIGH | MEDIUM | LOW>",
-  "advancement_explanation": "<string explaining the probability choice>"
+  "advancement_explanation": "<string explaining the probability choice>",
+  "verbal_consent": "<ACCEPTED | REJECTED>"
 }
 
 """
