@@ -3,6 +3,7 @@ Prompts de OpenAI para RIWI MATCH.
 - CV_EXTRACTION_PROMPT: extracción y normalización de CVs (gpt-4o vision).
 - build_match_user_message: construcción del mensaje de match CV vs JD.
 """
+
 from __future__ import annotations
 
 import json

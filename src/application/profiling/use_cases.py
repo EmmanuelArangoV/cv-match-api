@@ -12,6 +12,7 @@ de aqui, para no tener que cachear nada entre el disparo de la llamada y ese
 momento — se vuelve a leer QuestionSet/HiringProcess por `run_id`, que ya viaja
 en la URL del webhook.
 """
+
 from __future__ import annotations
 
 import uuid

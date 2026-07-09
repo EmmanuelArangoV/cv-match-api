@@ -2,13 +2,13 @@ from collections.abc import Callable
 
 from fastapi import Depends, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.shared.exceptions import ForbiddenException, UnauthorizedException
 from src.infrastructure.auth.tokens import decode_access_token
 from src.infrastructure.db.database import get_db
 from src.infrastructure.db.models import User, UserRole, UserStatus
 from src.infrastructure.db.repositories.user_repository import UserRepository
-from sqlalchemy.ext.asyncio import AsyncSession
 
 _bearer = HTTPBearer()
 _bearer_optional = HTTPBearer(auto_error=False)
@@ -51,6 +51,7 @@ def require_role(roles: list[UserRole]) -> Callable:
         if current_user.role not in [r.value for r in roles]:
             raise ForbiddenException("Sin permisos para esta acción")
         return current_user
+
     return _checker
 
 
@@ -59,6 +60,7 @@ def require_role_with_query(roles: list[UserRole]) -> Callable:
         if current_user.role not in [r.value for r in roles]:
             raise ForbiddenException("Sin permisos para esta acción")
         return current_user
+
     return _checker
 
 
@@ -67,5 +69,7 @@ RequireAdmin = Depends(require_role([UserRole.ADMIN]))
 RequireRecruiter = Depends(require_role([UserRole.ADMIN, UserRole.RECRUITER, UserRole.TA_LEADER]))
 RequireTALeader = Depends(require_role([UserRole.ADMIN, UserRole.TA_LEADER]))
 
-RequireRecruiterWithQuery = Depends(require_role_with_query([UserRole.ADMIN, UserRole.RECRUITER, UserRole.TA_LEADER]))
+RequireRecruiterWithQuery = Depends(
+    require_role_with_query([UserRole.ADMIN, UserRole.RECRUITER, UserRole.TA_LEADER])
+)
 RequireTALeaderWithQuery = Depends(require_role_with_query([UserRole.ADMIN, UserRole.TA_LEADER]))

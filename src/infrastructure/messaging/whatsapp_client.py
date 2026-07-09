@@ -53,7 +53,9 @@ class WhatsAppClient:
             "template": template,
         }
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.post(self._base_url + "/messages", headers=self._headers, json=payload)
+            response = await client.post(
+                self._base_url + "/messages", headers=self._headers, json=payload
+            )
             response.raise_for_status()
             return response.json()
 
@@ -67,7 +69,9 @@ class WhatsAppClient:
             "text": {"preview_url": False, "body": message},
         }
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.post(self._base_url + "/messages", headers=self._headers, json=payload)
+            response = await client.post(
+                self._base_url + "/messages", headers=self._headers, json=payload
+            )
             response.raise_for_status()
             return response.json()
 

@@ -4,6 +4,7 @@ Tarea Celery: descarga el CV de R2, extrae el contenido según el tipo de archiv
 llama a gpt-4o vision para extraer el perfil estructurado, genera el PDF normalizado
 en estilo BBLABS y lo sube a R2.
 """
+
 from __future__ import annotations
 
 import base64
@@ -32,9 +33,13 @@ _OUTPUT_COST = 0.000010
 # Extensiones reconocidas como imágenes directas
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".tiff", ".tif", ".bmp"}
 _IMAGE_MIME = {
-    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-    ".png": "image/png", ".webp": "image/webp",
-    ".gif": "image/gif", ".tiff": "image/tiff", ".tif": "image/tiff",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".tiff": "image/tiff",
+    ".tif": "image/tiff",
     ".bmp": "image/bmp",
 }
 
@@ -45,6 +50,7 @@ def _get_openai() -> OpenAI:
 
 # ─── Extractores por formato ───────────────────────────────────────────────────
 
+
 def _pdf_to_content(pdf_bytes: bytes) -> list[dict]:
     """Convierte cada página del PDF a un bloque image_url para la API de visión."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -53,10 +59,12 @@ def _pdf_to_content(pdf_bytes: bytes) -> list[dict]:
         mat = fitz.Matrix(2.0, 2.0)  # zoom 2× para mejor resolución
         pix = page.get_pixmap(matrix=mat)
         b64 = base64.b64encode(pix.tobytes("png")).decode()
-        items.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"},
-        })
+        items.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"},
+            }
+        )
     doc.close()
     return items
 
@@ -91,20 +99,19 @@ def _docx_to_content(docx_bytes: bytes) -> list[dict]:
     # ── Imágenes embebidas en el zip del DOCX ────────────────────────────────
     try:
         with zipfile.ZipFile(io.BytesIO(docx_bytes)) as z:
-            media = [
-                n for n in z.namelist()
-                if n.startswith("word/media/") and not n.endswith("/")
-            ]
+            media = [n for n in z.namelist() if n.startswith("word/media/") and not n.endswith("/")]
             for name in media[:10]:  # limitamos a 10 imágenes por documento
                 ext = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
                 mime = _IMAGE_MIME.get(ext)
                 if not mime:
                     continue
                 b64 = base64.b64encode(z.read(name)).decode()
-                items.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
-                })
+                items.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
+                    }
+                )
     except Exception:
         pass  # si falla la extracción de imágenes, continuamos solo con texto
 
@@ -115,10 +122,12 @@ def _image_to_content(image_bytes: bytes, ext: str) -> list[dict]:
     """Encoda una imagen directamente como bloque image_url."""
     mime = _IMAGE_MIME.get(ext, "image/jpeg")
     b64 = base64.b64encode(image_bytes).decode()
-    return [{
-        "type": "image_url",
-        "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
-    }]
+    return [
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
+        }
+    ]
 
 
 def _prepare_content(file_bytes: bytes, r2_key: str) -> list[dict]:
@@ -137,13 +146,12 @@ def _prepare_content(file_bytes: bytes, r2_key: str) -> list[dict]:
 
 # ─── Llamada a OpenAI ──────────────────────────────────────────────────────────
 
+
 def _get_embedding(text: str, client: OpenAI) -> list[float]:
     """Genera un vector embedding para el texto dado."""
-    response = client.embeddings.create(
-        input=text,
-        model="text-embedding-3-small"
-    )
+    response = client.embeddings.create(input=text, model="text-embedding-3-small")
     return response.data[0].embedding
+
 
 def _call_openai(content_blocks: list[dict], client: OpenAI) -> tuple[dict, int, int]:
     """Llama a gpt-4o con el prompt de extracción + los bloques de contenido."""
@@ -162,6 +170,7 @@ def _call_openai(content_blocks: list[dict], client: OpenAI) -> tuple[dict, int,
 
 
 # ─── Tarea Celery ──────────────────────────────────────────────────────────────
+
 
 @celery_app.task(
     bind=True,
@@ -283,6 +292,7 @@ def parse_cv(
 
             # Disparar automáticamente la tarea de match de forma SÍNCRONA
             from src.infrastructure.workers.tasks.run_match import execute_match, run_match
+
             final_status = "MATCH_PENDING"
             try:
                 match_res = execute_match(process_candidate_id, process_id)
@@ -298,6 +308,7 @@ def parse_cv(
             # Disparar tarea de WhatsApp solo si las credenciales están configuradas
             if settings.meta_whatsapp_access_token and settings.meta_whatsapp_phone_number_id:
                 from src.infrastructure.workers.tasks.whatsapp import send_whatsapp_consent
+
                 send_whatsapp_consent.delay(process_candidate_id)
 
             return {

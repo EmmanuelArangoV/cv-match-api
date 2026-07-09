@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from openai import AsyncOpenAI
 from sqlalchemy import func, select
@@ -149,10 +149,12 @@ class ProcessWhatsAppMessageUseCase:
             .join(HiringProcess)
             .where(func.regexp_replace(Candidate.phone, r"\D", "", "g") == digits_only)
             .where(
-                ProcessCandidate.whatsapp_consent_status.in_([
-                    WhatsAppConsentStatus.PENDING.value,
-                    WhatsAppConsentStatus.TIMEOUT.value,
-                ])
+                ProcessCandidate.whatsapp_consent_status.in_(
+                    [
+                        WhatsAppConsentStatus.PENDING.value,
+                        WhatsAppConsentStatus.TIMEOUT.value,
+                    ]
+                )
             )
             .options(
                 selectinload(ProcessCandidate.process),
@@ -224,7 +226,7 @@ class ProcessWhatsAppMessageUseCase:
     ) -> None:
         if intent == "ACCEPTED":
             pc.whatsapp_consent_status = WhatsAppConsentStatus.ACCEPTED.value
-            pc.whatsapp_responded_at = datetime.now(timezone.utc)
+            pc.whatsapp_responded_at = datetime.now(UTC)
             reply = reply or _ACCEPT_REPLY
 
             # El consentimiento por WhatsApp reemplaza la selección manual explícita
@@ -243,14 +245,14 @@ class ProcessWhatsAppMessageUseCase:
 
             # Encolar la llamada a Twilio con el delay configurado (24h por defecto)
             from src.infrastructure.workers.tasks.profiling import start_profiling_call
+
             start_profiling_call.apply_async(
-                args=[str(pc.id)],
-                countdown=settings.profiling_delay_seconds
+                args=[str(pc.id)], countdown=settings.profiling_delay_seconds
             )
 
         elif intent == "REJECTED":
             pc.whatsapp_consent_status = WhatsAppConsentStatus.REJECTED.value
-            pc.whatsapp_responded_at = datetime.now(timezone.utc)
+            pc.whatsapp_responded_at = datetime.now(UTC)
             reply = reply or _REJECT_REPLY
 
         if availability and intent in ("ACCEPTED", "AVAILABILITY_ONLY"):

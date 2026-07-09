@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import selectinload, sessionmaker
@@ -24,6 +24,7 @@ def send_whatsapp_consent(self, process_candidate_id: str) -> dict:
     with _SyncSession() as db:
         try:
             from sqlalchemy import select
+
             pc: ProcessCandidate = db.execute(
                 select(ProcessCandidate)
                 .where(ProcessCandidate.id == pc_uuid)
@@ -50,7 +51,7 @@ def send_whatsapp_consent(self, process_candidate_id: str) -> dict:
                 )
             )
 
-            pc.whatsapp_sent_at = datetime.now(timezone.utc)
+            pc.whatsapp_sent_at = datetime.now(UTC)
             db.commit()
 
             return {

@@ -11,9 +11,7 @@ class ProcessRepository:
         self._db = db
 
     async def find_by_id(self, process_id: uuid.UUID) -> HiringProcess | None:
-        result = await self._db.execute(
-            select(HiringProcess).where(HiringProcess.id == process_id)
-        )
+        result = await self._db.execute(select(HiringProcess).where(HiringProcess.id == process_id))
         return result.scalar_one_or_none()
 
     async def save(self, process: HiringProcess) -> HiringProcess:

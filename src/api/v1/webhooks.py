@@ -46,11 +46,14 @@ _ELEVENLABS_USD_PER_MINUTE_DEFAULT = 0.09
 def _verify_meta_signature(payload: bytes, signature_header: str | None) -> bool:
     if not signature_header or not signature_header.startswith("sha256="):
         return False
-    expected = "sha256=" + hmac.new(
-        settings.meta_whatsapp_webhook_secret.encode(),
-        payload,
-        hashlib.sha256,
-    ).hexdigest()
+    expected = (
+        "sha256="
+        + hmac.new(
+            settings.meta_whatsapp_webhook_secret.encode(),
+            payload,
+            hashlib.sha256,
+        ).hexdigest()
+    )
     return hmac.compare_digest(expected, signature_header)
 
 
@@ -384,4 +387,3 @@ async def elevenlabs_post_call_webhook(
 
     evaluate_profiling_transcription.delay(str(profiling_run.id), transcript)
     return {"status": "ok"}
-

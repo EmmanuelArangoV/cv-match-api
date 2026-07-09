@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
 from dataclasses import dataclass
 
 from fastapi import UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
-import hashlib
 
 from src.config import settings
 from src.domain.hiring_process.rules import HiringProcessRules
 from src.domain.hiring_process.state_machine import HiringProcessStateMachine
+from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
 from src.infrastructure.db.models import (
     Candidate,
     CandidateStatus,
@@ -21,12 +22,18 @@ from src.infrastructure.db.repositories.candidate_repository import CandidateRep
 from src.infrastructure.db.repositories.process_repository import ProcessRepository
 from src.infrastructure.storage import r2_client
 from src.infrastructure.workers.tasks.parse_cv import parse_cv
-from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
 
 _ALLOWED_EXTENSIONS = {
     ".pdf",
-    ".docx", ".doc",
-    ".jpg", ".jpeg", ".png", ".webp", ".tiff", ".tif", ".bmp",
+    ".docx",
+    ".doc",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".tiff",
+    ".tif",
+    ".bmp",
 }
 _CONTENT_TYPES: dict[str, str] = {
     ".pdf": "application/pdf",
@@ -40,7 +47,6 @@ _CONTENT_TYPES: dict[str, str] = {
     ".tif": "image/tiff",
     ".bmp": "image/bmp",
 }
-_MAX_FILE_MB = 10
 
 
 @dataclass
@@ -90,15 +96,14 @@ class UploadCVsUseCase:
             ext = "." + file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
             if ext not in _ALLOWED_EXTENSIONS:
                 raise BusinessRuleException(
-                    f"Formato no permitido: {file.filename}. "
-                    f"Se aceptan: PDF, DOCX, JPG, PNG, WEBP."
+                    f"Formato no permitido: {file.filename}. Se aceptan: PDF, DOCX, JPG, PNG, WEBP."
                 )
 
             content = await file.read()
             size_mb = len(content) / (1024 * 1024)
-            if size_mb > _MAX_FILE_MB:
+            if size_mb > settings.max_cv_file_size_mb:
                 raise BusinessRuleException(
-                    f"El archivo {file.filename} supera el límite de {_MAX_FILE_MB}MB."
+                    f"El archivo {file.filename} supera el límite de {settings.max_cv_file_size_mb}MB."
                 )
 
             valid_files.append((file, ext, content))
@@ -111,22 +116,26 @@ class UploadCVsUseCase:
             file_meta.append((file.filename, ext, content, file_hash))
 
         results: list[UploadResult] = []
-        
+
         for filename, ext, content, file_hash in file_meta:
             existing_candidate = await self._candidate_repo.find_by_cv_file_hash(file_hash)
-            
+
             if existing_candidate:
                 # El CV ya existe. Verificamos si ya está en este proceso.
-                existing_pc = await self._candidate_repo.find_process_candidate(process_id, existing_candidate.id)
+                existing_pc = await self._candidate_repo.find_process_candidate(
+                    process_id, existing_candidate.id
+                )
                 if existing_pc:
-                    results.append(UploadResult(
-                        candidate_id=existing_candidate.id,
-                        process_candidate_id=existing_pc.id,
-                        filename=filename,
-                        task_id="already_exists"
-                    ))
+                    results.append(
+                        UploadResult(
+                            candidate_id=existing_candidate.id,
+                            process_candidate_id=existing_pc.id,
+                            filename=filename,
+                            task_id="already_exists",
+                        )
+                    )
                     continue
-                
+
                 # Crear nuevo ProcessCandidate vinculado al candidato existente
                 pc = ProcessCandidate(
                     process_id=process_id,
@@ -135,7 +144,7 @@ class UploadCVsUseCase:
                     whatsapp_consent_status=WhatsAppConsentStatus.PENDING.value,
                 )
                 await self._candidate_repo.save_process_candidate(pc)
-                
+
                 if process.status == ProcessStatus.DRAFT.value:
                     process.status = ProcessStatus.CVS_UPLOADED.value
                 # Commit antes de encolar: get_db() solo comitea al final del
@@ -145,25 +154,28 @@ class UploadCVsUseCase:
 
                 # Ejecutar match inmediatamente (ya tenemos la normalización)
                 from src.infrastructure.workers.tasks.run_match import run_match
+
                 task = run_match.delay(
                     process_candidate_id=str(pc.id),
                     process_id=str(process_id),
                 )
-                
-                results.append(UploadResult(
-                    candidate_id=existing_candidate.id,
-                    process_candidate_id=pc.id,
-                    filename=filename,
-                    task_id=task.id,
-                ))
+
+                results.append(
+                    UploadResult(
+                        candidate_id=existing_candidate.id,
+                        process_candidate_id=pc.id,
+                        filename=filename,
+                        task_id=task.id,
+                    )
+                )
             else:
                 # Candidato nuevo
                 candidate_id = uuid.uuid4()
                 r2_key = f"cvs/{process_id}/{candidate_id}/{filename}"
                 content_type = _CONTENT_TYPES.get(ext, "application/octet-stream")
-                
+
                 upload_tasks.append(r2_client.upload_file(r2_key, content, content_type))
-                
+
                 filename_stem = filename.rsplit(".", 1)[0]
                 candidate = Candidate(
                     id=candidate_id,
@@ -197,16 +209,16 @@ class UploadCVsUseCase:
                     str(process_id),
                 )
 
-                results.append(UploadResult(
-                    candidate_id=candidate_id,
-                    process_candidate_id=pc.id,
-                    filename=filename,
-                    task_id=task.id,
-                ))
+                results.append(
+                    UploadResult(
+                        candidate_id=candidate_id,
+                        process_candidate_id=pc.id,
+                        filename=filename,
+                        task_id=task.id,
+                    )
+                )
 
         if upload_tasks:
             await asyncio.gather(*upload_tasks)
 
         return results
-
-

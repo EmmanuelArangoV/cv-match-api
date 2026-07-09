@@ -5,6 +5,7 @@ Es analisis puro: no persiste nada (la persistencia de la JD sigue pasando por
 CreateJobDescriptionRequest / saveJD, tal como hoy). El recruiter revisa el
 resultado estructurado antes de decidir guardarlo.
 """
+
 from __future__ import annotations
 
 import json

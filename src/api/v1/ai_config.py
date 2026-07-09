@@ -54,6 +54,7 @@ def _serialize_setting(s: GlobalBusinessSetting) -> dict:
 
 # ─── Modelos de IA ─────────────────────────────────────────────────────────────
 
+
 @router.get("/models")
 async def list_models(
     current_user: User = Depends(get_current_user),
@@ -115,6 +116,7 @@ async def activate_model(
 
 # ─── Prompts (append-only) ──────────────────────────────────────────────────────
 
+
 @router.get("/prompts")
 async def list_prompts(
     current_user: User = Depends(get_current_user),
@@ -161,6 +163,7 @@ async def create_prompt(
 
 
 # ─── Configuración global del negocio ────────────────────────────────────────────
+
 
 @router.get("/global-settings")
 async def list_global_settings(

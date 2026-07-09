@@ -3,6 +3,7 @@ Tarea Celery: ejecuta el match de un candidato contra la JD del proceso.
 Consume normalized_cv del candidato y jd_raw_text de la JobDescription activa.
 Guarda match_percentage, match_explanation (breakdown JSONB) y match_category.
 """
+
 from __future__ import annotations
 
 import json
@@ -109,7 +110,11 @@ def execute_match(
             return {"error": "Process not found"}
 
         # Cambiar a MATCH_PROCESSING al iniciar el match
-        if process.status in (ProcessStatus.CVS_UPLOADED.value, ProcessStatus.MATCH_DONE.value, ProcessStatus.PROFILING_CONFIGURED.value):
+        if process.status in (
+            ProcessStatus.CVS_UPLOADED.value,
+            ProcessStatus.MATCH_DONE.value,
+            ProcessStatus.PROFILING_CONFIGURED.value,
+        ):
             process.status = ProcessStatus.MATCH_PROCESSING.value
             db.flush()
 
@@ -205,6 +210,7 @@ def run_match(
     process_id: str,
 ) -> dict:
     from src.infrastructure.db.models import CandidateStatus, ProcessCandidate
+
     try:
         return execute_match(process_candidate_id, process_id)
     except Exception as exc:

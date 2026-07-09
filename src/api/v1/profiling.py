@@ -80,16 +80,20 @@ async def trigger_profiling(
     for pc_id in body.process_candidate_ids:
         pc = await repo.find_process_candidate_by_id(pc_id)
         if not pc or pc.process_id != process_id:
-            skipped.append({
-                "process_candidate_id": str(pc_id),
-                "reason": "No encontrado en este proceso",
-            })
+            skipped.append(
+                {
+                    "process_candidate_id": str(pc_id),
+                    "reason": "No encontrado en este proceso",
+                }
+            )
             continue
         if pc.status != CandidateStatus.MATCHED.value:
-            skipped.append({
-                "process_candidate_id": str(pc_id),
-                "reason": f"Estado actual '{pc.status}' no es elegible (se requiere MATCHED)",
-            })
+            skipped.append(
+                {
+                    "process_candidate_id": str(pc_id),
+                    "reason": f"Estado actual '{pc.status}' no es elegible (se requiere MATCHED)",
+                }
+            )
             continue
 
         pc.status = CandidateStateMachine.transition(
@@ -134,10 +138,7 @@ async def list_profiling_runs(
 
     return {
         "total": len(runs),
-        "profiling_runs": [
-            _serialize_run(run, _candidate_name(run))
-            for run in runs
-        ],
+        "profiling_runs": [_serialize_run(run, _candidate_name(run)) for run in runs],
     }
 
 
@@ -157,17 +158,14 @@ async def list_all_profiling_runs(
     )
 
     if current_user.role == UserRole.RECRUITER.value:
-        query = query.join(
-            HiringProcess, ProcessCandidate.process_id == HiringProcess.id
-        ).where(HiringProcess.recruiter_id == current_user.id)
+        query = query.join(HiringProcess, ProcessCandidate.process_id == HiringProcess.id).where(
+            HiringProcess.recruiter_id == current_user.id
+        )
 
     result = await db.execute(query)
     runs = list(result.scalars().all())
 
     return {
         "total": len(runs),
-        "profiling_runs": [
-            _serialize_run(run, _candidate_name(run))
-            for run in runs
-        ],
+        "profiling_runs": [_serialize_run(run, _candidate_name(run)) for run in runs],
     }

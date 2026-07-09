@@ -97,6 +97,7 @@ class UpdateQuestionRequest(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _serialize_question(q: ProfilingQuestion) -> dict:
     return {
         "id": str(q.id),
@@ -138,7 +139,9 @@ def _serialize_set(qs: QuestionSet, include_questions: bool = False) -> dict:
     return data
 
 
-async def _get_set_or_404(qs_id: uuid.UUID, db: AsyncSession, with_questions: bool = False) -> QuestionSet:
+async def _get_set_or_404(
+    qs_id: uuid.UUID, db: AsyncSession, with_questions: bool = False
+) -> QuestionSet:
     query = select(QuestionSet).where(QuestionSet.id == qs_id)
     if with_questions:
         query = query.options(selectinload(QuestionSet.questions))
@@ -152,6 +155,7 @@ async def _get_set_or_404(qs_id: uuid.UUID, db: AsyncSession, with_questions: bo
 # ---------------------------------------------------------------------------
 # Endpoints — Question Sets
 # ---------------------------------------------------------------------------
+
 
 @router.post("", status_code=201)
 async def create_question_set(
@@ -239,7 +243,9 @@ async def update_question_set(
         qs.description = body.description
     if body.status is not None:
         if body.status not in VALID_SET_STATUSES:
-            raise BusinessRuleException(f"Estado inválido: '{body.status}'. Valores válidos: {sorted(VALID_SET_STATUSES)}")
+            raise BusinessRuleException(
+                f"Estado inválido: '{body.status}'. Valores válidos: {sorted(VALID_SET_STATUSES)}"
+            )
         qs.status = body.status
 
     for field in (
@@ -276,6 +282,7 @@ async def delete_question_set(
 # ---------------------------------------------------------------------------
 # Endpoints — Questions dentro de un set
 # ---------------------------------------------------------------------------
+
 
 @router.post("/{question_set_id}/questions", status_code=201)
 async def add_question(

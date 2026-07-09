@@ -1,14 +1,13 @@
 import os
 from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=os.path.join(_PROJECT_ROOT, ".env"),
-        extra="ignore"
-    )
+    model_config = SettingsConfigDict(env_file=os.path.join(_PROJECT_ROOT, ".env"), extra="ignore")
 
     # App
     app_env: str = "development"
@@ -60,6 +59,7 @@ class Settings(BaseSettings):
     max_concurrent_calls: int = 4
     whatsapp_consent_timeout_hours: int = 24
     cv_batch_limit: int = 50
+    max_cv_file_size_mb: int = 10
     profiling_delay_seconds: int = 86400  # Default 24h
     max_call_attempts: int = 3
     machine_detection_timeout: int = 10

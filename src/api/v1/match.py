@@ -41,15 +41,16 @@ async def trigger_match(
 
     # RB-009
     if process.status in (ProcessStatus.CLOSED.value, ProcessStatus.ARCHIVED.value):
-        raise BusinessRuleException("RB-009: No se pueden ejecutar acciones en un proceso cerrado o archivado")
+        raise BusinessRuleException(
+            "RB-009: No se pueden ejecutar acciones en un proceso cerrado o archivado"
+        )
 
     # RB-001
     if not process.job_descriptions:
         raise BusinessRuleException("RB-001: El proceso no tiene una Job Description activa")
 
     eligible = [
-        pc for pc in process.process_candidates
-        if pc.status == CandidateStatus.MATCH_PENDING.value
+        pc for pc in process.process_candidates if pc.status == CandidateStatus.MATCH_PENDING.value
     ]
 
     if not eligible:
@@ -68,10 +69,12 @@ async def trigger_match(
             process_candidate_id=str(pc.id),
             process_id=str(process_id),
         )
-        task_ids.append({
-            "process_candidate_id": str(pc.id),
-            "task_id": task.id,
-        })
+        task_ids.append(
+            {
+                "process_candidate_id": str(pc.id),
+                "task_id": task.id,
+            }
+        )
 
     return {
         "process_id": str(process_id),
@@ -88,9 +91,7 @@ async def match_status(
 ) -> dict:
     from src.infrastructure.db.models import ProcessCandidate
 
-    result = await db.execute(
-        select(HiringProcess).where(HiringProcess.id == process_id)
-    )
+    result = await db.execute(select(HiringProcess).where(HiringProcess.id == process_id))
     process: HiringProcess | None = result.scalar_one_or_none()
 
     if not process:
