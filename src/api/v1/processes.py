@@ -4,7 +4,7 @@ import uuid
 import fitz  # pymupdf
 from docx import Document as DocxDocument
 from fastapi import APIRouter, Depends, File, UploadFile
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession

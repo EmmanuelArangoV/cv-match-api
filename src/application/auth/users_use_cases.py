@@ -1,7 +1,7 @@
 import uuid
 
 from src.domain.shared.exceptions import BusinessRuleException, ConflictException, NotFoundException
-from src.infrastructure.auth.password import get_password_hash
+from src.infrastructure.auth.password import hash_password
 from src.infrastructure.db.models import User, UserStatus
 from src.infrastructure.db.repositories.user_repository import UserRepository
 
@@ -26,7 +26,7 @@ class CreateUserUseCase:
             name=user_data["name"],
             last_name=user_data["last_name"],
             email=user_data["email"],
-            password_hash=get_password_hash(user_data["password"]),
+            password_hash=hash_password(user_data["password"]),
             role=user_data["role"],
             status=UserStatus.ACTIVE.value,
         )
@@ -54,7 +54,7 @@ class UpdateUserUseCase:
         if "role" in user_data:
             user.role = user_data["role"]
         if "password" in user_data and user_data["password"]:
-            user.password_hash = get_password_hash(user_data["password"])
+            user.password_hash = hash_password(user_data["password"])
 
         return await self._repo.save(user)
 
