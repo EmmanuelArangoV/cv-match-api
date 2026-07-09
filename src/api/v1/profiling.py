@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 from src.api.deps import RequireRecruiter, get_current_user
 from src.domain.candidate.state_machine import CandidateStateMachine
 from src.domain.hiring_process.rules import HiringProcessRules
-from src.domain.shared.exceptions import NotFoundException, BusinessRuleException
+from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
 from src.infrastructure.db.database import get_db
 from src.infrastructure.db.models import (
     CandidateStatus,

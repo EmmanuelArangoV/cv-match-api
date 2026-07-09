@@ -533,3 +533,20 @@ class AuditLog(Base):
     new_value: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+class AIFeedback(Base):
+    __tablename__ = "ai_feedback"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    process_candidate_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("process_candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    context: Mapped[str] = mapped_column(String(50), nullable=False) # 'MATCH' o 'PROFILING'
+    evaluation: Mapped[str] = mapped_column(String(50), nullable=False) # 'CORRECT', 'PARTIAL', 'INCORRECT'
+    notes: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    process_candidate: Mapped["ProcessCandidate"] = relationship()

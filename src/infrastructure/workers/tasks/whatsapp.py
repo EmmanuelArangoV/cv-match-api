@@ -52,6 +52,16 @@ def send_whatsapp_consent(self, process_candidate_id: str) -> dict:
             )
 
             pc.whatsapp_sent_at = datetime.now(UTC)
+            
+            from src.infrastructure.db.models import CostLog
+            cost_log = CostLog(
+                process_id=process.id,
+                process_candidate_id=pc.id,
+                action="WHATSAPP_CONSENT",
+                provider="META",
+                estimated_cost=0.08, # aprox cost per template
+            )
+            db.add(cost_log)
             db.commit()
 
             return {

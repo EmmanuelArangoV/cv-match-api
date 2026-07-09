@@ -153,9 +153,8 @@ def _get_embedding(text: str, client: OpenAI) -> list[float]:
     return response.data[0].embedding
 
 
-def _call_openai(content_blocks: list[dict], client: OpenAI) -> tuple[dict, int, int]:
-    """Llama a gpt-4o con el prompt de extracción + los bloques de contenido."""
-    content: list[dict] = [{"type": "text", "text": CV_EXTRACTION_PROMPT}]
+def _call_openai(content_blocks: list[dict], client: OpenAI, prompt: str, model: str) -> tuple[dict, int, int]:
+    content: list[dict] = [{"type": "text", "text": prompt}]
     content.extend(content_blocks)
 
     response = client.chat.completions.create(
@@ -221,7 +220,13 @@ def parse_cv(
 
             # Llamar a OpenAI
             openai_client = _get_openai()
-            extracted, tokens_in, tokens_out = _call_openai(content_blocks, openai_client)
+            from src.infrastructure.cache.redis_client import (
+                get_active_ai_model_sync,
+                get_active_ai_prompt_sync,
+            )
+            prompt = get_active_ai_prompt_sync(db, "PROFILE_EXTRACT", CV_EXTRACTION_PROMPT)
+            model = get_active_ai_model_sync(db, "OPENAI", "gpt-4o")
+            extracted, tokens_in, tokens_out = _call_openai(content_blocks, openai_client, prompt, model)
 
             # Deduplicación por correo
             ext_email = extracted.get("email")

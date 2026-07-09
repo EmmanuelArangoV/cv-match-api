@@ -161,19 +161,40 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
                 for q in questions
             ]
 
+            from src.infrastructure.cache.redis_client import (
+                get_active_ai_model_sync,
+                get_active_ai_prompt_sync,
+            )
+            sys_prompt = get_active_ai_prompt_sync(db, "VOICE_PROFILING", PROFILING_EVALUATION_PROMPT)
+            model = get_active_ai_model_sync(db, "OPENAI", "gpt-4o")
+
             prompt = (
-                f"{PROFILING_EVALUATION_PROMPT}\n\n=== QUESTION SET ===\n"
+                f"{sys_prompt}\n\n=== QUESTION SET ===\n"
                 f"{json.dumps(questions_data, indent=2)}\n\n=== TRANSCRIPT ===\n{transcript}\n"
             )
 
             client = _get_openai()
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model=model,
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
                 temperature=0.2,
             )
             result_data = json.loads(response.choices[0].message.content or "{}")
+
+            from src.infrastructure.db.models import CostLog, ProcessCandidate
+            prompt_tokens = response.usage.prompt_tokens if getattr(response, 'usage', None) else 0
+            completion_tokens = response.usage.completion_tokens if getattr(response, 'usage', None) else 0
+            cost = (prompt_tokens * 0.005 / 1000) + (completion_tokens * 0.015 / 1000)
+            cost_log = CostLog(
+                process_id=db.query(ProcessCandidate).filter(ProcessCandidate.id == profiling_run.process_candidate_id).first().process_id,
+                process_candidate_id=profiling_run.process_candidate_id,
+                action="PROFILING_EVALUATION",
+                provider="OPENAI",
+                estimated_cost=cost,
+                details={"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens}
+            )
+            db.add(cost_log)
 
             answers = result_data.get("answers", [])
             for ans in answers:

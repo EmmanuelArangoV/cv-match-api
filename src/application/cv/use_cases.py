@@ -82,6 +82,15 @@ class UploadCVsUseCase:
                 f"El proceso en estado {process.status} no permite carga de CVs."
             )
 
+        # RB-010: Check budget
+        from sqlalchemy import func, select
+
+        from src.infrastructure.db.models import CostLog
+        cost_query = select(func.sum(CostLog.estimated_cost)).where(CostLog.process_id == process_id)
+        cost_result = await self.db.execute(cost_query)
+        total_cost = cost_result.scalar() or 0.0
+        HiringProcessRules.require_budget_available(total_cost, float(process.budget_max_usd))
+
         current_count = await self._candidate_repo.count_by_process(process_id)
         if current_count + len(files) > settings.cv_batch_limit:
             raise BusinessRuleException(

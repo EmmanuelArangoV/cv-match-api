@@ -27,7 +27,13 @@ class TokenResponse(BaseModel):
 
 @router.post("/login", response_model=TokenResponse)
 async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)) -> dict:
-    return await LoginUseCase(UserRepository(db)).execute(body.email, body.password)
+    result = await LoginUseCase(UserRepository(db)).execute(body.email, body.password)
+    from src.infrastructure.db.audit import record_audit
+    user = await UserRepository(db).find_by_email(body.email)
+    if user:
+        record_audit(db, user.id, "USER_LOGIN", "User", user.id)
+        await db.commit()
+    return result
 
 
 @router.post("/refresh", response_model=TokenResponse)

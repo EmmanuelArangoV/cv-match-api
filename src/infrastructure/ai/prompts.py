@@ -213,13 +213,16 @@ def build_match_messages(
     normalized_cv: dict,
     jd_text: str,
     weights: dict,
+    system_prompt: str = None,
+    user_template: str = None,
 ) -> list[dict]:
     """
     Builds the messages list for the OpenAI chat completions API.
     weights must have keys: technical_skills, relevant_experience, seniority,
     industry_domain, languages, education_certifications (all integers summing to 100).
     """
-    user_content = _MATCH_USER_TEMPLATE.format(
+    template = user_template or _MATCH_USER_TEMPLATE
+    user_content = template.format(
         jd_text=jd_text,
         normalized_cv_json=json.dumps(normalized_cv, ensure_ascii=False, indent=2),
         w_technical_skills=weights["technical_skills"],
@@ -230,7 +233,7 @@ def build_match_messages(
         w_education_certifications=weights["education_certifications"],
     )
     return [
-        {"role": "system", "content": _MATCH_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt or _MATCH_SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
     ]
 
