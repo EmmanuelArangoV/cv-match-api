@@ -206,4 +206,7 @@ async def update_global_setting(
 
     await db.commit()
     await db.refresh(setting)
+    from src.infrastructure.cache.redis_client import redis_client
+    if redis_client:
+        await redis_client.delete(f"global_setting:{setting_key}")
     return _serialize_setting(setting)

@@ -293,6 +293,8 @@ async def override_profiling_run(
     run.advancement_probability = body.advancement_probability
     run.advancement_explanation = body.advancement_explanation
 
+    from src.infrastructure.db.audit import record_audit
+    record_audit(db, current_user.id, "MANUAL_OVERRIDE", "ProfilingRun", run.id)
     await db.commit()
     await db.refresh(run)
     return _serialize_run(run, _candidate_name(run))

@@ -49,7 +49,9 @@ def start_profiling_call(self, process_candidate_id: str):
         except Exception as exc:
             db.rollback()
             logger.error(f"[profiling] error transitorio iniciando llamada: {exc}")
-            raise self.retry(exc=exc, max_retries=settings.max_call_attempts)
+            from src.infrastructure.cache.redis_client import get_global_setting_sync
+            max_retries = int(get_global_setting_sync(db, "max_call_attempts", str(settings.max_call_attempts)))
+            raise self.retry(exc=exc, max_retries=max_retries)
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60, name="retry_or_fail_profiling_call")
@@ -67,7 +69,9 @@ def retry_or_fail_profiling_call(self, profiling_run_id: str, reason: str):
         except Exception as exc:
             db.rollback()
             logger.error(f"[profiling] error transitorio reintentando llamada: {exc}")
-            raise self.retry(exc=exc, max_retries=settings.max_call_attempts)
+            from src.infrastructure.cache.redis_client import get_global_setting_sync
+            max_retries = int(get_global_setting_sync(db, "max_call_attempts", str(settings.max_call_attempts)))
+            raise self.retry(exc=exc, max_retries=max_retries)
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60, name="check_stale_profiling_calls")
@@ -125,7 +129,9 @@ def check_stale_profiling_calls(self):
         except Exception as exc:
             db.rollback()
             logger.error(f"[watchdog] error revisando llamadas atascadas: {exc}")
-            raise self.retry(exc=exc, max_retries=settings.max_call_attempts)
+            from src.infrastructure.cache.redis_client import get_global_setting_sync
+            max_retries = int(get_global_setting_sync(db, "max_call_attempts", str(settings.max_call_attempts)))
+            raise self.retry(exc=exc, max_retries=max_retries)
 
 
 @shared_task(
@@ -256,4 +262,6 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
         except Exception as exc:
             db.rollback()
             logger.error(f"[profiling] error evaluando transcripcion: {exc}")
-            raise self.retry(exc=exc, max_retries=settings.max_call_attempts)
+            from src.infrastructure.cache.redis_client import get_global_setting_sync
+            max_retries = int(get_global_setting_sync(db, "max_call_attempts", str(settings.max_call_attempts)))
+            raise self.retry(exc=exc, max_retries=max_retries)

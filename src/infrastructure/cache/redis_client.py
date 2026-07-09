@@ -51,3 +51,18 @@ def get_active_ai_model_sync(db, provider: str, fallback_model: str) -> str:
     redis_client_sync.setex(key, 900, val) # 15 minutes TTL
     return val
 
+
+def get_global_setting_sync(db, key: str, default_value: str) -> str:
+    redis_key = f"global_setting:{key}"
+    cached = redis_client_sync.get(redis_key)
+    if cached:
+        return cached.decode('utf-8')
+    
+    from src.infrastructure.db.models import GlobalBusinessSetting
+    setting = db.query(GlobalBusinessSetting).filter_by(setting_key=key).first()
+    
+    val = setting.setting_value if setting else default_value
+    
+    # Cache it for 15 minutes
+    redis_client_sync.setex(redis_key, 900, val)
+    return val

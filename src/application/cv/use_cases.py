@@ -87,7 +87,7 @@ class UploadCVsUseCase:
 
         from src.infrastructure.db.models import CostLog
         cost_query = select(func.sum(CostLog.estimated_cost)).where(CostLog.process_id == process_id)
-        cost_result = await self.db.execute(cost_query)
+        cost_result = await self._db.execute(cost_query)
         total_cost = cost_result.scalar() or 0.0
         HiringProcessRules.require_budget_available(total_cost, float(process.budget_max_usd))
 

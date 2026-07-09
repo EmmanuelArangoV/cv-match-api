@@ -87,6 +87,8 @@ async def create_user(
 ) -> UserResponse:
     repo = UserRepository(db)
     user = await CreateUserUseCase(repo).execute(body.model_dump())
+    from src.infrastructure.db.audit import record_audit
+    record_audit(db, current_user.id, "USER_MANAGEMENT", "User", user.id)
     await db.commit()
     await db.refresh(user)
     return UserResponse.from_domain(user)
@@ -102,6 +104,8 @@ async def update_user(
     repo = UserRepository(db)
     update_data = {k: v for k, v in body.model_dump().items() if v is not None}
     user = await UpdateUserUseCase(repo).execute(user_id, update_data)
+    from src.infrastructure.db.audit import record_audit
+    record_audit(db, current_user.id, "USER_MANAGEMENT", "User", user.id)
     await db.commit()
     await db.refresh(user)
     return UserResponse.from_domain(user)
@@ -116,6 +120,8 @@ async def update_user_status(
 ) -> UserResponse:
     repo = UserRepository(db)
     user = await UpdateUserStatusUseCase(repo).execute(user_id, body.status.value)
+    from src.infrastructure.db.audit import record_audit
+    record_audit(db, current_user.id, "USER_MANAGEMENT", "User", user.id)
     await db.commit()
     await db.refresh(user)
     return UserResponse.from_domain(user)

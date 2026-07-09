@@ -164,6 +164,8 @@ async def patch_candidate_override(
     elif body.human_override_match is None and "human_override_match" in body.model_fields_set:
         pc.human_override_match = None
 
+    from src.infrastructure.db.audit import record_audit
+    record_audit(db, current_user.id, "MANUAL_OVERRIDE", "ProcessCandidate", pc.id)
     await db.commit()
     return {"status": "updated"}
 
