@@ -37,4 +37,4 @@ Thumbs.db
 
 # Documentación privada con credenciales
 PRIVATE_README.md
-celerybeat-schedule
+celerybeat-schedule*

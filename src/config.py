@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     stale_calling_timeout_seconds: int = 60
     stale_answered_timeout_seconds: int = 900
 
+    # Reintento automatico al dia siguiente para PROFILING_FAILED (ver retry_failed_profiling_next_day)
+    profiling_daily_retry_delay_hours: int = 24
+    profiling_max_daily_retries: int = 3
+
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"

@@ -1,14 +1,15 @@
 import json
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from celery import shared_task
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
 from src.application.profiling.use_cases import (
     InitiateProfilingCallUseCase,
+    RequeueFailedProfilingCallUseCase,
     RetryOrFailProfilingCallUseCase,
 )
 from src.config import settings
@@ -17,9 +18,12 @@ from src.domain.profiling.watchdog import WATCHED_STATUSES, is_run_stale
 from src.domain.shared.exceptions import BusinessRuleException, DomainException, NotFoundException
 from src.infrastructure.db.models import (
     AdvancementProbability,
+    CandidateStatus,
+    ProcessCandidate,
     ProfilingAnswer,
     ProfilingQuestion,
     ProfilingRun,
+    ProfilingRunStatus,
     QuestionSet,
 )
 
@@ -132,6 +136,78 @@ def check_stale_profiling_calls(self):
             from src.infrastructure.cache.redis_client import get_global_setting_sync
             max_retries = int(get_global_setting_sync(db, "max_call_attempts", str(settings.max_call_attempts)))
             raise self.retry(exc=exc, max_retries=max_retries)
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=60, name="retry_failed_profiling_next_day")
+def retry_failed_profiling_next_day(self):
+    """
+    Watchdog periodico (Celery Beat). Un candidato en PROFILING_FAILED agoto
+    settings.max_call_attempts en el mismo dia sin conectar la llamada — este
+    job lo reencola automaticamente pasadas settings.profiling_daily_retry_delay_hours
+    (24h por defecto) desde el ultimo intento fallido, hasta un maximo de
+    settings.profiling_max_daily_retries ciclos. Agotados esos ciclos se deja
+    en PROFILING_FAILED para que el recruiter decida (RB-008).
+    """
+    cutoff = datetime.now(UTC) - timedelta(hours=settings.profiling_daily_retry_delay_hours)
+
+    with _SyncSession() as db:
+        try:
+            candidate_ids = (
+                db.execute(
+                    select(ProcessCandidate.id).where(
+                        ProcessCandidate.status == CandidateStatus.PROFILING_FAILED.value
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            requeued: list[str] = []
+            for pc_id in candidate_ids:
+                last_failed_run = db.execute(
+                    select(ProfilingRun)
+                    .where(
+                        ProfilingRun.process_candidate_id == pc_id,
+                        ProfilingRun.status == ProfilingRunStatus.FAILED.value,
+                    )
+                    .order_by(ProfilingRun.updated_at.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+                if not last_failed_run or last_failed_run.updated_at > cutoff:
+                    continue  # aun no pasa suficiente tiempo desde que fallo
+
+                cycles_used = db.execute(
+                    select(func.count(ProfilingRun.id)).where(
+                        ProfilingRun.process_candidate_id == pc_id,
+                        ProfilingRun.status == ProfilingRunStatus.FAILED.value,
+                    )
+                ).scalar_one()
+                if cycles_used >= settings.profiling_max_daily_retries:
+                    continue  # se agotaron los reintentos automaticos, requiere al recruiter
+
+                locked = db.execute(
+                    select(ProcessCandidate)
+                    .where(ProcessCandidate.id == pc_id)
+                    .with_for_update(skip_locked=True)
+                ).scalar_one_or_none()
+                if not locked or locked.status != CandidateStatus.PROFILING_FAILED.value:
+                    continue  # otro worker ya lo tomo, o el recruiter ya lo cambio de estado
+
+                RequeueFailedProfilingCallUseCase(db).execute(str(pc_id))
+                requeued.append(str(pc_id))
+
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.error(f"[profiling] error reencolando fallidos del dia anterior: {exc}")
+            raise self.retry(exc=exc)
+
+    for pc_id in requeued:
+        start_profiling_call.delay(pc_id)
+
+    if requeued:
+        logger.warning(f"[profiling] candidatos reencolados para reintento del dia siguiente: {requeued}")
+    return {"requeued": requeued}
 
 
 @shared_task(

@@ -97,6 +97,31 @@ class InitiateProfilingCallUseCase:
         return profiling_run
 
 
+class RequeueFailedProfilingCallUseCase:
+    """
+    Reintento automatico al dia siguiente (RB-010): un candidato en
+    PROFILING_FAILED (agoto los settings.max_call_attempts del mismo dia sin
+    conectar) se reencola a PROFILING_QUEUED para un nuevo ciclo de llamadas.
+    El caller (retry_failed_profiling_next_day) decide cuando corresponde
+    segun cuanto tiempo paso y cuantos ciclos ya se intentaron; agotados
+    settings.profiling_max_daily_retries ciclos, se deja en PROFILING_FAILED
+    para que el recruiter decida (RB-008: nunca se descarta automatico).
+    """
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def execute(self, process_candidate_id: str) -> ProcessCandidate:
+        pc = self.db.get(ProcessCandidate, uuid.UUID(process_candidate_id))
+        if not pc:
+            raise NotFoundException("ProcessCandidate", process_candidate_id)
+
+        pc.status = CandidateStateMachine.transition(
+            CandidateStatus(pc.status), CandidateStatus.PROFILING_QUEUED
+        ).value
+        return pc
+
+
 class RetryOrFailProfilingCallUseCase:
     """
     Se dispara cuando AMD detecta buzon de voz (o Twilio reporta que la llamada

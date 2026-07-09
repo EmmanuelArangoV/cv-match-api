@@ -31,5 +31,9 @@ celery_app.conf.update(
             "task": "check_stale_profiling_calls",
             "schedule": settings.watchdog_interval_seconds,
         },
+        "retry-failed-profiling-next-day": {
+            "task": "retry_failed_profiling_next_day",
+            "schedule": 3600,  # revisa cada hora quien ya cumplio profiling_daily_retry_delay_hours
+        },
     },
 )
