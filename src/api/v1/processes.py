@@ -15,6 +15,7 @@ from src.api.deps import (
     RequireRecruiterWithQuery,
     get_current_user,
 )
+from src.application.hiring_process.enhance_jd_usecase import EnhanceJDUseCase
 from src.application.hiring_process.jd_parse_usecase import ParseJobDescriptionUseCase
 from src.domain.hiring_process.rules import HiringProcessRules
 from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
@@ -359,6 +360,61 @@ async def parse_job_description(
         raise NotFoundException("Proceso no encontrado")
 
     return await ParseJobDescriptionUseCase().execute(body.jd_raw_text)
+
+
+@router.post("/{process_id}/job-description/enhance", status_code=201)
+async def enhance_job_description(
+    process_id: uuid.UUID,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Mejora la JD actual con IA y la guarda como una nueva versión."""
+    result = await db.execute(
+        select(HiringProcess)
+        .where(HiringProcess.id == process_id)
+        .options(selectinload(HiringProcess.job_descriptions))
+    )
+    process: HiringProcess | None = result.scalar_one_or_none()
+
+    if not process:
+        raise NotFoundException("Proceso no encontrado")
+
+    if process.status in (ProcessStatus.CLOSED.value, ProcessStatus.ARCHIVED.value):
+        raise BusinessRuleException("RB-009: Proceso cerrado o archivado")
+
+    active_jd = max(process.job_descriptions, key=lambda j: j.version, default=None)
+    if not active_jd:
+        raise BusinessRuleException("No hay una JD para mejorar. Sube o crea una JD primero.")
+
+    enhancement_result = await EnhanceJDUseCase().execute(active_jd.jd_raw_text)
+    enhanced_text = enhancement_result["enhanced_jd"]
+
+    next_version = active_jd.version + 1
+
+    new_jd = JobDescription(
+        process_id=process_id,
+        version=next_version,
+        jd_raw_text=enhanced_text,
+        structured_jd={
+            "version": next_version,
+            "raw": enhanced_text,
+            "ai_enhanced": True,
+            "recommendations": enhancement_result["recommendations"],
+            "missing_elements": enhancement_result["missing_elements"],
+        },
+    )
+    db.add(new_jd)
+    await db.commit()
+    await db.refresh(new_jd)
+
+    return {
+        "jd_id": str(new_jd.id),
+        "process_id": str(process_id),
+        "version": new_jd.version,
+        "recommendations": enhancement_result["recommendations"],
+        "missing_elements": enhancement_result["missing_elements"],
+        "created_at": new_jd.created_at.isoformat(),
+    }
 
 
 @router.post("/{process_id}/job-description/upload", status_code=201)

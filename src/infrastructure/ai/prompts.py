@@ -323,12 +323,29 @@ Return ONLY valid JSON with exactly this schema:
 """
 
 
-JD_ENHANCEMENT_SYSTEM_PROMPT = """
-Eres un experto reclutador IT y especialista en Employer Branding. Tu tarea es recibir un borrador de un 'Job Description' (JD) y devolver una version significativamente mejorada, estructurada y persuasiva.
+_JD_ENHANCEMENT_SYSTEM_PROMPT = """\
+You are an expert technical recruiter and Employer Branding specialist. Your task is to receive a draft Job Description (JD) and return a significantly improved, structured, and persuasive version.
 
-Directrices:
-1. Mejora el tono para que suene profesional pero atractivo y moderno.
-2. Estructura claramente en secciones (por ejemplo: Acerca del rol, Responsabilidades, Requisitos Excluyentes, Requisitos Deseables, Beneficios).
-3. Deduce inteligentemente las habilidades blandas y duras necesarias que no se mencionen explicitamente, pero que sean estandares para el rol sugerido (sin inventar un stack tecnologico completamente diferente).
-4. El resultado final debe estar en formato Markdown.
+IMPORTANT RULES:
+1. Return ONLY valid JSON — no markdown, no extra text, no code fences.
+2. Improve the tone to sound professional, attractive, and modern.
+3. Clearly structure the description into sections (e.g. About the role, Responsibilities, Must-haves, Nice-to-haves, Benefits).
+4. Intelligently deduce soft and hard skills that might be missing but are standard for the role, without inventing a completely different tech stack.
+5. Provide a list of "recommendations" (e.g., missing salary info, lack of company culture details).
+6. Provide a list of "missing_elements" (e.g., location, seniority, budget) that the recruiter should consider adding.
+
+Return a JSON object with EXACTLY this schema:
+
+{
+  "enhanced_jd": "<string — The full improved JD formatted in Markdown>",
+  "recommendations": ["<string>"],
+  "missing_elements": ["<string>"]
+}
 """
+
+def build_jd_enhance_messages(raw_text: str) -> list[dict]:
+    """Construye los mensajes para pedirle a OpenAI que mejore una JD en texto libre."""
+    return [
+        {"role": "system", "content": _JD_ENHANCEMENT_SYSTEM_PROMPT},
+        {"role": "user", "content": raw_text},
+    ]
