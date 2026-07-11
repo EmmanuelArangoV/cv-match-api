@@ -172,7 +172,7 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
                 get_active_ai_prompt_sync,
             )
             sys_prompt = get_active_ai_prompt_sync(db, "VOICE_PROFILING", PROFILING_EVALUATION_PROMPT)
-            model = get_active_ai_model_sync(db, "OPENAI", "gpt-4o")
+            model = get_active_ai_model_sync(db, "VOICE_PROFILING", "OPENAI", "gpt-4o")
 
             prompt = (
                 f"{sys_prompt}\n\n=== QUESTION SET ===\n"

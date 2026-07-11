@@ -668,6 +668,7 @@ async def export_ranking(
     query = (
         select(ProcessCandidate)
         .where(ProcessCandidate.process_id == process_id)
+        .options(selectinload(ProcessCandidate.candidate))
         .order_by(ProcessCandidate.match_percentage.desc().nullslast())
     )
     result = await db.execute(query)

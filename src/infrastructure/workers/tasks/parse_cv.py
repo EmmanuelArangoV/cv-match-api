@@ -224,8 +224,8 @@ def parse_cv(
                 get_active_ai_model_sync,
                 get_active_ai_prompt_sync,
             )
-            prompt = get_active_ai_prompt_sync(db, "PROFILE_EXTRACT", CV_EXTRACTION_PROMPT)
-            model = get_active_ai_model_sync(db, "OPENAI", "gpt-4o")
+            prompt = get_active_ai_prompt_sync(db, "CV_EXTRACTION", CV_EXTRACTION_PROMPT)
+            model = get_active_ai_model_sync(db, "CV_EXTRACTION", "OPENAI", "gpt-4o")
             extracted, tokens_in, tokens_out = _call_openai(content_blocks, openai_client, prompt, model)
 
             # Deduplicación por correo

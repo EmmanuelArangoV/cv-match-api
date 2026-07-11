@@ -30,12 +30,12 @@ def get_active_ai_prompt_sync(db, task_type: str, fallback_prompt: str) -> str:
         select(AIPrompt).where(AIPrompt.task_type == task_type, AIPrompt.is_active == True)
     ).scalar_one_or_none()
     
-    val = prompt.prompt_template if prompt else fallback_prompt
+    val = prompt.system_prompt_text if prompt else fallback_prompt
     redis_client_sync.setex(key, 900, val) # 15 minutes TTL
     return val
 
-def get_active_ai_model_sync(db, provider: str, fallback_model: str) -> str:
-    key = f"ai_model:active:{provider}"
+def get_active_ai_model_sync(db, task_type: str, provider: str, fallback_model: str) -> str:
+    key = f"ai_model:active:{task_type}:{provider}"
     cached = redis_client_sync.get(key)
     if cached:
         return cached
@@ -44,7 +44,11 @@ def get_active_ai_model_sync(db, provider: str, fallback_model: str) -> str:
 
     from src.infrastructure.db.models import AIModelConfiguration
     model = db.execute(
-        select(AIModelConfiguration).where(AIModelConfiguration.provider == provider, AIModelConfiguration.is_active == True)
+        select(AIModelConfiguration).where(
+            AIModelConfiguration.task_type == task_type,
+            AIModelConfiguration.provider == provider,
+            AIModelConfiguration.is_active == True,
+        )
     ).scalar_one_or_none()
     
     val = model.model_name if model else fallback_model

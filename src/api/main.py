@@ -6,14 +6,17 @@ from fastapi.responses import JSONResponse
 
 from src.api.v1 import (
     ai_config,
+    audit,
     auth,
     candidates,
     debug,
+    feedback,
     match,
     metrics,
     processes,
     profiling,
     question_sets,
+    reports,
     users,
     webhooks,
 )
@@ -93,6 +96,9 @@ app.include_router(profiling.global_router, prefix="/api/v1")
 app.include_router(metrics.router, prefix="/api/v1")
 app.include_router(ai_config.router, prefix="/api/v1")
 app.include_router(users.router, prefix="/api/v1")
+app.include_router(feedback.router, prefix="/api/v1")
+app.include_router(audit.router, prefix="/api/v1")
+app.include_router(reports.router, prefix="/api/v1")
 
 if not settings.is_production:
     app.include_router(debug.router, prefix="/api/v1")
