@@ -19,6 +19,12 @@ lista cada brecha con los archivos de backend y frontend a tocar. El estado actu
   con las excepciones de dominio (`src/domain/shared/exceptions.py`), nunca con `HTTPException`.
 - El trabajo pesado (parseo de CV, match, WhatsApp, llamadas de voz) corre en tareas Celery.
 - Comentarios y mensajes de error **en español**.
+- **Todo router nuevo en `src/api/v1/` debe montarse explícitamente en `src/api/main.py`** con
+  `app.include_router(...)` — crear el archivo con `APIRouter` no lo expone por HTTP. `feedback.py`,
+  `audit.py` y `reports.py` existieron como código muerto por esta razón hasta que se integró el
+  frontend; verifica `main.py` si un router "existe" pero responde 404.
+- `GET /api/v1/users/me` devuelve el perfil del usuario autenticado (cualquier rol) — úsalo en vez
+  de decodificar el JWT para obtener nombre/email, que no van en el payload del token.
 
 ```bash
 pip install -e ".[dev]"    # instalar
