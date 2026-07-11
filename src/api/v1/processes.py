@@ -161,7 +161,11 @@ async def list_processes(
 ) -> dict:
     from src.infrastructure.db.models import UserRole
 
-    query = select(HiringProcess).order_by(HiringProcess.created_at.desc())
+    query = (
+        select(HiringProcess)
+        .options(selectinload(HiringProcess.recruiter))
+        .order_by(HiringProcess.created_at.desc())
+    )
 
     # RECRUITER solo ve los suyos
     if current_user.role == UserRole.RECRUITER.value:
@@ -181,6 +185,8 @@ async def list_processes(
                 "seniority": p.seniority,
                 "status": p.status,
                 "budget_max_usd": float(p.budget_max_usd),
+                "recruiter_id": str(p.recruiter_id),
+                "recruiter_name": f"{p.recruiter.name} {p.recruiter.last_name}",
                 "created_at": p.created_at.isoformat(),
             }
             for p in processes
@@ -197,7 +203,10 @@ async def get_process(
     result = await db.execute(
         select(HiringProcess)
         .where(HiringProcess.id == process_id)
-        .options(selectinload(HiringProcess.job_descriptions))
+        .options(
+            selectinload(HiringProcess.job_descriptions),
+            selectinload(HiringProcess.recruiter),
+        )
     )
     process: HiringProcess | None = result.scalar_one_or_none()
 
@@ -216,6 +225,8 @@ async def get_process(
         "status": process.status,
         "budget_max_usd": float(process.budget_max_usd),
         "match_weights": process.match_weights_override,
+        "recruiter_id": str(process.recruiter_id),
+        "recruiter_name": f"{process.recruiter.name} {process.recruiter.last_name}",
         "question_set_id": str(process.question_set_id) if process.question_set_id else None,
         "voice_override_system_prompt": process.voice_override_system_prompt,
         "voice_override_first_message": process.voice_override_first_message,
