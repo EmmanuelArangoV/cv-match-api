@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.deps import RequireAdmin, get_db
+from src.api.deps import RequireAdmin, get_current_user, get_db
 from src.application.auth.users_use_cases import (
     CreateUserUseCase,
     ListUsersUseCase,
@@ -77,6 +77,13 @@ async def list_users(
     repo = UserRepository(db)
     users = await ListUsersUseCase(repo).execute()
     return [UserResponse.from_domain(u) for u in users]
+
+
+@router.get("/me", response_model=UserResponse)
+async def get_me(
+    current_user: User = Depends(get_current_user),
+) -> UserResponse:
+    return UserResponse.from_domain(current_user)
 
 
 @router.post("", status_code=201, response_model=UserResponse)
