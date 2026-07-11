@@ -4,13 +4,14 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import RequireRecruiter, RequireRecruiterWithQuery, get_current_user
 from src.application.cv.use_cases import UploadCVsUseCase
 from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
 from src.infrastructure.db.database import get_db
-from src.infrastructure.db.models import User, WhatsAppConsentStatus
+from src.infrastructure.db.models import CostLog, User, WhatsAppConsentStatus
 from src.infrastructure.db.repositories.candidate_repository import CandidateRepository
 from src.infrastructure.storage import r2_client
 
@@ -114,6 +115,13 @@ async def get_candidate_detail(
     explanation = pc.match_explanation or {}
     candidate = pc.candidate
 
+    cost_logs_result = await db.execute(
+        select(CostLog)
+        .where(CostLog.candidate_id == candidate.id, CostLog.process_id == process_id)
+        .order_by(CostLog.created_at)
+    )
+    cost_logs = cost_logs_result.scalars().all()
+
     return {
         "process_candidate_id": str(pc.id),
         "process_id": str(process_id),
@@ -140,6 +148,19 @@ async def get_candidate_detail(
         }
         if pc.match_percentage
         else None,
+        "costs": [
+            {
+                "operation_type": log.operation_type,
+                "model_used": log.model_used,
+                "tokens_input": log.tokens_input,
+                "tokens_output": log.tokens_output,
+                "call_duration_s": log.call_duration_s,
+                "estimated_cost": float(log.estimated_cost),
+                "created_at": log.created_at.isoformat(),
+            }
+            for log in cost_logs
+        ],
+        "total_cost": float(sum(log.estimated_cost for log in cost_logs)),
     }
 
 
