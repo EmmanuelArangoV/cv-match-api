@@ -1,3 +1,4 @@
+import csv
 import io
 import uuid
 
@@ -21,8 +22,10 @@ from src.domain.hiring_process.rules import HiringProcessRules
 from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
 from src.infrastructure.db.database import get_db
 from src.infrastructure.db.models import (
+    CostLog,
     HiringProcess,
     JobDescription,
+    ProcessCandidate,
     ProcessStatus,
     QuestionSet,
     User,
@@ -581,8 +584,6 @@ async def get_process_metrics(
 ) -> dict:
     from sqlalchemy import func
 
-    from src.infrastructure.db.models import CostLog, ProcessCandidate
-
     process = await db.get(HiringProcess, process_id)
     if not process:
         raise NotFoundException("Proceso no encontrado")
@@ -664,16 +665,22 @@ async def export_ranking(
     if not process:
         raise NotFoundException("Proceso no encontrado")
 
-    query = select(ProcessCandidate).where(ProcessCandidate.process_id == process_id).order_by(ProcessCandidate.match_score.desc().nullslast())
+    query = (
+        select(ProcessCandidate)
+        .where(ProcessCandidate.process_id == process_id)
+        .order_by(ProcessCandidate.match_percentage.desc().nullslast())
+    )
     result = await db.execute(query)
     candidates = result.scalars().all()
 
-    output = StringIO()
+    output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["ID", "Email", "Status", "Match Score", "Match Category", "Profiling Score", "Created At"])
+    writer.writerow(["ID", "Email", "Status", "Match Percentage", "Match Category", "Created At"])
     for c in candidates:
         email = c.candidate.email if c.candidate else ""
-        writer.writerow([str(c.id), email, c.status, c.match_score, c.match_category, c.profiling_score, c.created_at])
+        writer.writerow(
+            [str(c.id), email, c.status, c.match_percentage, c.match_category, c.created_at]
+        )
 
     output.seek(0)
     return StreamingResponse(
@@ -692,15 +699,21 @@ async def export_costs(
     if not process:
         raise NotFoundException("Proceso no encontrado")
 
-    query = select(CostLog).where(CostLog.process_id == process_id).order_by(CostLog.created_at.desc())
+    query = (
+        select(CostLog)
+        .where(CostLog.process_id == process_id)
+        .order_by(CostLog.created_at.desc())
+    )
     result = await db.execute(query)
     logs = result.scalars().all()
 
-    output = StringIO()
+    output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["ID", "Action", "Provider", "Estimated Cost", "Created At"])
+    writer.writerow(["ID", "Operation Type", "Model Used", "Estimated Cost", "Created At"])
     for log in logs:
-        writer.writerow([str(log.id), log.action, log.provider, log.estimated_cost, log.created_at])
+        writer.writerow(
+            [str(log.id), log.operation_type, log.model_used, log.estimated_cost, log.created_at]
+        )
 
     output.seek(0)
     return StreamingResponse(
