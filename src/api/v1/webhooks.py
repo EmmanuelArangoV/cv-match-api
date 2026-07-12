@@ -70,7 +70,11 @@ def _extract_message_content(message: dict) -> tuple[str, str]:
 
     Tipos que manejamos:
     - text            → mensaje de texto libre del candidato
-    - interactive     → clic en botón de la plantilla (button_reply)
+    - interactive     → clic en botón de un mensaje interactivo armado por nosotros
+    - button          → clic en botón "Quick Reply" de una PLANTILLA aprobada en Meta
+                         (nuestro mensaje de consentimiento se envía como "type": "template",
+                         no "interactive" — Meta reporta esos clics con este tipo distinto,
+                         con el texto en message.button.text en vez de interactive.button_reply)
     """
     from_phone = message.get("from", "")
     msg_type = message.get("type", "")
@@ -83,6 +87,9 @@ def _extract_message_content(message: dict) -> tuple[str, str]:
         if interactive.get("type") == "button_reply":
             # El candidato hizo clic en "Sí, acepto" o "No, gracias"
             return from_phone, interactive["button_reply"]["title"]
+
+    if msg_type == "button":
+        return from_phone, message.get("button", {}).get("text", "")
 
     return from_phone, ""
 

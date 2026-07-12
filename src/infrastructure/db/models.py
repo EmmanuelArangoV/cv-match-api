@@ -336,6 +336,11 @@ class ProcessCandidate(Base):
         DateTime(timezone=True), nullable=True
     )
     availability_preference: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Historial conversacional (turnos {role, text, at}) del chatbot de WhatsApp para
+    # ESTE proceso puntual — vive en la fila de ProcessCandidate a proposito: si el mismo
+    # telefono vuelve a aplicar en una solicitud/proceso distinto, se crea una fila nueva y
+    # el contexto arranca limpio, sin arrastrar conversaciones de procesos anteriores.
+    whatsapp_conversation: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
     # Notas del recruiter y override humano
     human_notes: Mapped[str | None] = mapped_column(TEXT, nullable=True)
