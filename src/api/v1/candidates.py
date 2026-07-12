@@ -4,7 +4,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import RequireRecruiter, RequireRecruiterWithQuery, get_current_user
@@ -63,6 +63,14 @@ async def list_candidates(
     repo = CandidateRepository(db)
     pcs = await repo.find_process_candidates(process_id)
 
+    # Costo total por candidato en este proceso, en una sola query (evita N+1).
+    cost_result = await db.execute(
+        select(CostLog.candidate_id, func.sum(CostLog.estimated_cost))
+        .where(CostLog.process_id == process_id)
+        .group_by(CostLog.candidate_id)
+    )
+    cost_by_candidate = {cid: float(cost) for cid, cost in cost_result.all()}
+
     candidates = []
     for rank, pc in enumerate(pcs, start=1):
         explanation = pc.match_explanation or {}
@@ -78,6 +86,7 @@ async def list_candidates(
             "match_category": pc.match_category,
             "whatsapp_consent": pc.whatsapp_consent_status,
             "normalized_cv_url": pc.candidate.normalized_cv_url,
+            "total_cost": round(cost_by_candidate.get(pc.candidate_id, 0.0), 6),
         }
         # Profile fields from normalized CV
         profile = pc.candidate.normalized_cv or {}
@@ -146,7 +155,7 @@ async def get_candidate_detail(
             "gaps": explanation.get("gaps", []),
             "breakdown": explanation.get("breakdown", {}),
         }
-        if pc.match_percentage
+        if pc.match_percentage is not None
         else None,
         "costs": [
             {

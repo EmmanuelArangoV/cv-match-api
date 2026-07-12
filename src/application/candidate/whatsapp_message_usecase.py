@@ -255,6 +255,12 @@ class ProcessWhatsAppMessageUseCase:
             pc.whatsapp_responded_at = datetime.now(UTC)
             reply = reply or _REJECT_REPLY
 
+            # Rechazo explicito: sacarlo de la cola para que nunca se le llame.
+            if pc.status == CandidateStatus.PROFILING_QUEUED.value:
+                pc.status = CandidateStateMachine.transition(
+                    CandidateStatus(pc.status), CandidateStatus.SELECTED_FOR_PROFILING
+                ).value
+
         if availability and intent in ("ACCEPTED", "AVAILABILITY_ONLY"):
             pc.availability_preference = availability
 

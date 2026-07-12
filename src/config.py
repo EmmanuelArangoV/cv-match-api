@@ -57,7 +57,7 @@ class Settings(BaseSettings):
 
     # Business rules
     max_concurrent_calls: int = 4
-    whatsapp_consent_timeout_hours: int = 24
+    whatsapp_consent_timeout_hours: float = 24
     cv_batch_limit: int = 50
     max_cv_file_size_mb: int = 10
     profiling_delay_seconds: int = 86400  # Default 24h

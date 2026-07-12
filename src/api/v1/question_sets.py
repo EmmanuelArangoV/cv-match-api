@@ -419,59 +419,70 @@ async def delete_question(
     await db.commit()
 
 
-async def _clone_question_set_if_active(qs: QuestionSet, db: AsyncSession) -> QuestionSet:
-    from sqlalchemy import select
+async def _clone_question_set(qs: QuestionSet, db: AsyncSession) -> QuestionSet:
+    """Crea una copia independiente de `qs` (set + preguntas) en estado DRAFT, version+1.
+    No toca `qs` ni ninguna referencia existente — quien llame decide qué hacer con el id nuevo."""
+    from src.infrastructure.db.models import ProfilingQuestion, QuestionSetStatus
 
-    from src.infrastructure.db.models import HiringProcess, ProfilingQuestion, QuestionSetStatus
-
-    in_use = await db.execute(
-        select(HiringProcess.id).where(HiringProcess.question_set_id == qs.id).limit(1)
+    new_qs = QuestionSet(
+        name=qs.name,
+        description=qs.description,
+        version=qs.version + 1,
+        status=QuestionSetStatus.DRAFT.value,
+        created_by=qs.created_by,
+        default_agent_id=qs.default_agent_id,
+        default_system_prompt=qs.default_system_prompt,
+        default_first_message=qs.default_first_message,
+        default_language=qs.default_language,
+        default_llm_model=qs.default_llm_model,
+        default_voice_id=qs.default_voice_id,
+        default_tts_stability=qs.default_tts_stability,
+        default_tts_speed=qs.default_tts_speed,
+        default_tts_similarity_boost=qs.default_tts_similarity_boost,
     )
-    is_in_use = in_use.scalar_one_or_none() is not None
+    db.add(new_qs)
+    await db.flush()  # get new_qs.id
 
-    if qs.status == QuestionSetStatus.ACTIVE.value or is_in_use:
-        new_qs = QuestionSet(
-            name=qs.name,
-            description=qs.description,
-            version=qs.version + 1,
-            status=QuestionSetStatus.DRAFT.value,
-            created_by=qs.created_by,
-            default_agent_id=qs.default_agent_id,
-            default_system_prompt=qs.default_system_prompt,
-            default_first_message=qs.default_first_message,
-            default_language=qs.default_language,
-            default_llm_model=qs.default_llm_model,
-            default_voice_id=qs.default_voice_id,
-            default_tts_stability=qs.default_tts_stability,
-            default_tts_speed=qs.default_tts_speed,
-            default_tts_similarity_boost=qs.default_tts_similarity_boost,
+    for q in qs.questions:
+        new_q = ProfilingQuestion(
+            question_set_id=new_qs.id,
+            order_index=q.order_index,
+            text=q.text,
+            type=q.type,
+            expected_answer=q.expected_answer,
+            positive_keywords=list(q.positive_keywords) if q.positive_keywords else [],
+            risk_keywords=list(q.risk_keywords) if q.risk_keywords else [],
+            weight=q.weight,
+            is_critical=q.is_critical,
+            eval_criteria=q.eval_criteria,
         )
-        db.add(new_qs)
-        await db.flush()  # get new_qs.id
+        db.add(new_q)
 
-        # Clone questions
-        for q in qs.questions:
-            new_q = ProfilingQuestion(
-                question_set_id=new_qs.id,
-                order_index=q.order_index,
-                text=q.text,
-                type=q.type,
-                expected_answer=q.expected_answer,
-                positive_keywords=list(q.positive_keywords) if q.positive_keywords else [],
-                risk_keywords=list(q.risk_keywords) if q.risk_keywords else [],
-                weight=q.weight,
-                is_critical=q.is_critical,
-                eval_criteria=q.eval_criteria,
-            )
-            db.add(new_q)
+    await db.flush()
+    # Refresh the new_qs to have the questions loaded
+    result = await db.execute(
+        select(QuestionSet)
+        .where(QuestionSet.id == new_qs.id)
+        .options(selectinload(QuestionSet.questions))
+    )
+    return result.scalar_one()
 
-        await db.flush()
-        # Refresh the new_qs to have the questions loaded
-        result = await db.execute(
-            select(QuestionSet)
-            .where(QuestionSet.id == new_qs.id)
-            .options(selectinload(QuestionSet.questions))
-        )
-        return result.scalar_one()
+
+async def _clone_question_set_if_active(qs: QuestionSet, db: AsyncSession) -> QuestionSet:
+    from sqlalchemy import func, select
+
+    from src.infrastructure.db.models import HiringProcess, QuestionSetStatus
+
+    # >1 (no >=1): desde que /processes/{id}/question-set clona siempre al asignar, un set
+    # referenciado por un solo proceso es la copia dedicada de ESE proceso — editarla en
+    # el lugar es precisamente "personalizar sin tocar la plantilla". Solo forzamos un nuevo
+    # fork si de verdad hay más de un proceso compartiéndolo (o si es el template ACTIVE).
+    shared_count = await db.execute(
+        select(func.count(HiringProcess.id)).where(HiringProcess.question_set_id == qs.id)
+    )
+    is_shared = shared_count.scalar_one() > 1
+
+    if qs.status == QuestionSetStatus.ACTIVE.value or is_shared:
+        return await _clone_question_set(qs, db)
 
     return qs

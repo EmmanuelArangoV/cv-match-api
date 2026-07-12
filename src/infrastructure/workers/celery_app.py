@@ -31,5 +31,9 @@ celery_app.conf.update(
             "task": "check_stale_profiling_calls",
             "schedule": settings.watchdog_interval_seconds,
         },
+        "resolve-whatsapp-timeouts": {
+            "task": "resolve_whatsapp_timeouts",
+            "schedule": settings.watchdog_interval_seconds,
+        },
     },
 )

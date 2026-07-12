@@ -188,17 +188,22 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
             )
             result_data = json.loads(response.choices[0].message.content or "{}")
 
-            from src.infrastructure.db.models import CostLog, ProcessCandidate
-            prompt_tokens = response.usage.prompt_tokens if getattr(response, 'usage', None) else 0
-            completion_tokens = response.usage.completion_tokens if getattr(response, 'usage', None) else 0
+            from src.infrastructure.db.models import CostLog, OperationType, ProcessCandidate
+
+            prompt_tokens = response.usage.prompt_tokens if getattr(response, "usage", None) else 0
+            completion_tokens = (
+                response.usage.completion_tokens if getattr(response, "usage", None) else 0
+            )
             cost = (prompt_tokens * 0.005 / 1000) + (completion_tokens * 0.015 / 1000)
+            pc = db.get(ProcessCandidate, profiling_run.process_candidate_id)
             cost_log = CostLog(
-                process_id=db.query(ProcessCandidate).filter(ProcessCandidate.id == profiling_run.process_candidate_id).first().process_id,
-                process_candidate_id=profiling_run.process_candidate_id,
-                action="PROFILING_EVALUATION",
-                provider="OPENAI",
+                process_id=pc.process_id if pc else None,
+                candidate_id=pc.candidate_id if pc else None,
+                operation_type=OperationType.ANSWER_EVALUATION.value,
+                model_used=model,
+                tokens_input=prompt_tokens,
+                tokens_output=completion_tokens,
                 estimated_cost=cost,
-                details={"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens}
             )
             db.add(cost_log)
 

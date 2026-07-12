@@ -52,14 +52,15 @@ def send_whatsapp_consent(self, process_candidate_id: str) -> dict:
             )
 
             pc.whatsapp_sent_at = datetime.now(UTC)
-            
-            from src.infrastructure.db.models import CostLog
+
+            from src.infrastructure.db.models import CostLog, OperationType
+
             cost_log = CostLog(
                 process_id=process.id,
-                process_candidate_id=pc.id,
-                action="WHATSAPP_CONSENT",
-                provider="META",
-                estimated_cost=0.08, # aprox cost per template
+                candidate_id=candidate.id,
+                operation_type=OperationType.WHATSAPP_MESSAGE.value,
+                model_used="meta-whatsapp-template",
+                estimated_cost=0.08,  # aprox cost per template
             )
             db.add(cost_log)
             db.commit()
@@ -84,9 +85,8 @@ def resolve_whatsapp_timeouts(self) -> dict:
     from sqlalchemy import select
 
     from src.infrastructure.db.models import (
+        CandidateStatus,
         ProcessCandidate,
-        ProfilingRun,
-        ProfilingRunStatus,
         WhatsAppConsentStatus,
     )
     from src.infrastructure.workers.tasks.profiling import start_profiling_call
@@ -113,15 +113,10 @@ def resolve_whatsapp_timeouts(self) -> dict:
             for pc in candidates:
                 pc.whatsapp_consent_status = WhatsAppConsentStatus.TIMEOUT.value
 
-                # Check if there is a queued profiling run waiting for consent
-                run = db.execute(
-                    select(ProfilingRun)
-                    .where(ProfilingRun.process_candidate_id == pc.id)
-                    .where(ProfilingRun.status == ProfilingRunStatus.QUEUED.value)
-                ).scalar_one_or_none()
-
-                if run:
-                    # Inicia la llamada porque el timeout permite llamada en frío (RB-004 / WhatsApp logic)
+                # No respondio a tiempo — igual se llama (RB-004 / WhatsApp logic), el
+                # agente pedira el consentimiento verbal en la llamada al no tener el de
+                # WhatsApp. Solo si sigue realmente en cola (nadie lo cancelo mientras tanto).
+                if pc.status == CandidateStatus.PROFILING_QUEUED.value:
                     start_profiling_call.delay(str(pc.id))
                     processed.append(str(pc.id))
 

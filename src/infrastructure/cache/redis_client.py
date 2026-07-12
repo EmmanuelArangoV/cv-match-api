@@ -29,9 +29,31 @@ def get_active_ai_prompt_sync(db, task_type: str, fallback_prompt: str) -> str:
     prompt = db.execute(
         select(AIPrompt).where(AIPrompt.task_type == task_type, AIPrompt.is_active == True)
     ).scalar_one_or_none()
-    
+
     val = prompt.system_prompt_text if prompt else fallback_prompt
     redis_client_sync.setex(key, 900, val) # 15 minutes TTL
+    return val
+
+
+async def get_active_ai_prompt(db, task_type: str, fallback_prompt: str) -> str:
+    """Variante async de get_active_ai_prompt_sync, para llamarla desde endpoints FastAPI
+    (AsyncSession) en vez de las tareas de Celery (Session sincrona)."""
+    key = f"ai_prompt:active:{task_type}"
+    cached = await redis_client.get(key)
+    if cached:
+        return cached
+
+    from sqlalchemy import select
+
+    from src.infrastructure.db.models import AIPrompt
+
+    result = await db.execute(
+        select(AIPrompt).where(AIPrompt.task_type == task_type, AIPrompt.is_active == True)
+    )
+    prompt = result.scalar_one_or_none()
+
+    val = prompt.system_prompt_text if prompt else fallback_prompt
+    await redis_client.setex(key, 900, val)  # 15 minutes TTL
     return val
 
 def get_active_ai_model_sync(db, task_type: str, provider: str, fallback_model: str) -> str:

@@ -310,12 +310,6 @@ def parse_cv(
                 )
                 final_status = "MATCH_PENDING (queued)"
 
-            # Disparar tarea de WhatsApp solo si las credenciales están configuradas
-            if settings.meta_whatsapp_access_token and settings.meta_whatsapp_phone_number_id:
-                from src.infrastructure.workers.tasks.whatsapp import send_whatsapp_consent
-
-                send_whatsapp_consent.delay(process_candidate_id)
-
             return {
                 "candidate_id": candidate_id,
                 "status": final_status,

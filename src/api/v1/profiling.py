@@ -1,12 +1,14 @@
+import asyncio
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.api.deps import RequireRecruiter, get_current_user
+from src.config import settings
 from src.domain.candidate.state_machine import CandidateStateMachine
 from src.domain.hiring_process.rules import HiringProcessRules
 from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
@@ -19,6 +21,7 @@ from src.infrastructure.db.models import (
     ProfilingRun,
     User,
     UserRole,
+    WhatsAppConsentStatus,
 )
 from src.infrastructure.db.repositories.candidate_repository import CandidateRepository
 
@@ -48,6 +51,8 @@ def _serialize_run(run: ProfilingRun, candidate_name: str) -> dict:
         "advancement_explanation": run.advancement_explanation,
         "transcription_url": run.transcription_url,
         "transcript_summary": run.transcript_summary,
+        "transcript_turns": run.transcript_turns,
+        "has_audio": run.elevenlabs_conversation_id is not None,
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
         "created_at": run.created_at.isoformat(),
@@ -64,6 +69,7 @@ async def trigger_profiling(
 ) -> dict:
     """Dispara profiling manual (RB-004) para los candidatos MATCHED seleccionados."""
     from src.infrastructure.workers.tasks.profiling import start_profiling_call
+    from src.infrastructure.workers.tasks.whatsapp import send_whatsapp_consent
 
     process = await db.get(HiringProcess, process_id)
     if not process:
@@ -87,29 +93,51 @@ async def trigger_profiling(
                 }
             )
             continue
-        if pc.status != CandidateStatus.MATCHED.value:
+        if pc.status == CandidateStatus.MATCHED.value:
+            pc.status = CandidateStateMachine.transition(
+                CandidateStatus(pc.status), CandidateStatus.SELECTED_FOR_PROFILING
+            ).value
+            pc.status = CandidateStateMachine.transition(
+                CandidateStatus(pc.status), CandidateStatus.PROFILING_QUEUED
+            ).value
+        elif pc.status == CandidateStatus.PROFILING_FAILED.value:
+            # Reintento manual: la maquina de estados ya permite este salto directo.
+            pc.status = CandidateStateMachine.transition(
+                CandidateStatus(pc.status), CandidateStatus.PROFILING_QUEUED
+            ).value
+        else:
             skipped.append(
                 {
                     "process_candidate_id": str(pc_id),
-                    "reason": f"Estado actual '{pc.status}' no es elegible (se requiere MATCHED)",
+                    "reason": (
+                        f"Estado actual '{pc.status}' no es elegible "
+                        "(se requiere MATCHED o PROFILING_FAILED)"
+                    ),
                 }
             )
             continue
 
-        pc.status = CandidateStateMachine.transition(
-            CandidateStatus(pc.status), CandidateStatus.SELECTED_FOR_PROFILING
-        ).value
-        pc.status = CandidateStateMachine.transition(
-            CandidateStatus(pc.status), CandidateStatus.PROFILING_QUEUED
-        ).value
         queued.append(pc)
 
     await db.commit()
 
+    whatsapp_configured = bool(
+        settings.meta_whatsapp_access_token and settings.meta_whatsapp_phone_number_id
+    )
+
     tasks = []
     for pc in queued:
-        task = start_profiling_call.delay(str(pc.id))
-        tasks.append({"process_candidate_id": str(pc.id), "task_id": task.id})
+        already_accepted = pc.whatsapp_consent_status == WhatsAppConsentStatus.ACCEPTED.value
+        if already_accepted or not whatsapp_configured:
+            # Ya dio consentimiento en una activacion anterior (reintento), o no hay
+            # WhatsApp configurado para pedirlo — llamar directo, sin esperar nada.
+            task = start_profiling_call.delay(str(pc.id))
+            tasks.append({"process_candidate_id": str(pc.id), "task_id": task.id})
+        else:
+            # Pide consentimiento por WhatsApp; la llamada la dispara _apply_intent al
+            # aceptar, o resolve_whatsapp_timeouts si no responde a tiempo.
+            send_whatsapp_consent.delay(str(pc.id))
+            tasks.append({"process_candidate_id": str(pc.id), "task_id": ""})
 
     return {
         "process_id": str(process_id),
@@ -200,6 +228,38 @@ async def get_profiling_run(
     if not run:
         raise NotFoundException("ProfilingRun no encontrado")
     return _serialize_run(run, _candidate_name(run))
+
+
+@global_router.get("/runs/{run_id}/audio")
+async def get_profiling_run_audio(
+    run_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """
+    Proxea el audio de la llamada directo desde la API de ElevenLabs usando el
+    elevenlabs_conversation_id ya guardado — no lo persistimos nosotros, se pide
+    en vivo cada vez (mas simple que subirlo a R2 aparte).
+    """
+    from src.infrastructure.voice.elevenlabs_client import get_elevenlabs_client
+
+    run = await db.get(ProfilingRun, run_id)
+    if not run:
+        raise NotFoundException("ProfilingRun no encontrado")
+    if not run.elevenlabs_conversation_id:
+        raise NotFoundException("Esta llamada no tiene conversacion de ElevenLabs asociada")
+
+    def _fetch_audio() -> bytes:
+        client = get_elevenlabs_client()
+        chunks = client.conversational_ai.conversations.audio.get(run.elevenlabs_conversation_id)
+        return b"".join(chunks)
+
+    try:
+        audio_bytes = await asyncio.to_thread(_fetch_audio)
+    except Exception as exc:
+        raise BusinessRuleException(f"No se pudo obtener el audio de ElevenLabs: {exc}") from exc
+
+    return Response(content=audio_bytes, media_type="audio/mpeg")
 
 
 @global_router.get("/runs/{run_id}/answers")

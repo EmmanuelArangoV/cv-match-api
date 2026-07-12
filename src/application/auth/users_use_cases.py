@@ -73,3 +73,15 @@ class UpdateUserStatusUseCase:
 
         user.status = status
         return await self._repo.save(user)
+
+
+class DeleteUserUseCase:
+    def __init__(self, user_repo: UserRepository) -> None:
+        self._repo = user_repo
+
+    async def execute(self, user_id: uuid.UUID) -> None:
+        user = await self._repo.find_by_id(user_id)
+        if not user:
+            raise NotFoundException("User no encontrado")
+        await self._repo.delete(user)
+

@@ -16,7 +16,6 @@ from src.api.deps import (
     RequireRecruiterWithQuery,
     get_current_user,
 )
-from src.application.hiring_process.enhance_jd_usecase import EnhanceJDUseCase
 from src.application.hiring_process.jd_parse_usecase import ParseJobDescriptionUseCase
 from src.domain.hiring_process.rules import HiringProcessRules
 from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
@@ -25,6 +24,7 @@ from src.infrastructure.db.models import (
     CostLog,
     HiringProcess,
     JobDescription,
+    OperationType,
     ProcessCandidate,
     ProcessStatus,
     QuestionSet,
@@ -255,18 +255,31 @@ async def update_process_question_set(
     current_user: User = RequireRecruiter,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Asocia un QuestionSet al proceso (RB-003: requerido para habilitar profiling)."""
+    """
+    Asocia un QuestionSet al proceso (RB-003: requerido para habilitar profiling).
+    Siempre clona el set elegido en una copia independiente para este proceso — así el
+    set original en /app/sets queda intacto como plantilla, y las personalizaciones de
+    un proceso nunca afectan a otro que use la "misma" plantilla.
+    """
+    from src.api.v1.question_sets import _clone_question_set
+
     process = await db.get(HiringProcess, process_id)
     if not process:
         raise NotFoundException("Proceso no encontrado")
 
     HiringProcessRules.require_active_process(ProcessStatus(process.status))
 
-    question_set = await db.get(QuestionSet, body.question_set_id)
+    result = await db.execute(
+        select(QuestionSet)
+        .where(QuestionSet.id == body.question_set_id)
+        .options(selectinload(QuestionSet.questions))
+    )
+    question_set = result.scalar_one_or_none()
     if not question_set:
         raise NotFoundException("Set de preguntas no encontrado")
 
-    process.question_set_id = question_set.id
+    cloned = await _clone_question_set(question_set, db)
+    process.question_set_id = cloned.id
     await db.commit()
 
     return {
@@ -368,67 +381,23 @@ async def parse_job_description(
     current_user: User = RequireRecruiter,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Analiza una JD en texto libre con IA. No persiste nada (ver saveJD)."""
+    """
+    Analiza una JD en texto libre con IA: extrae requisitos (must_have/nice_to_have/
+    deal_breakers/summary) y en la misma pasada sugiere una version enriquecida
+    (enhanced_jd/recommendations/missing_elements). No persiste nada — el recruiter
+    decide si aplica la version mejorada y la guarda via saveJD/createJobDescription.
+    """
     process = await db.get(HiringProcess, process_id)
     if not process:
         raise NotFoundException("Proceso no encontrado")
 
-    return await ParseJobDescriptionUseCase().execute(body.jd_raw_text)
-
-
-@router.post("/{process_id}/job-description/enhance", status_code=201)
-async def enhance_job_description(
-    process_id: uuid.UUID,
-    current_user: User = RequireRecruiter,
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    """Mejora la JD actual con IA y la guarda como una nueva versión."""
-    result = await db.execute(
-        select(HiringProcess)
-        .where(HiringProcess.id == process_id)
-        .options(selectinload(HiringProcess.job_descriptions))
+    return await ParseJobDescriptionUseCase().execute(
+        body.jd_raw_text,
+        process_name=process.name,
+        job_title=process.job_title,
+        area=process.area,
+        seniority=process.seniority,
     )
-    process: HiringProcess | None = result.scalar_one_or_none()
-
-    if not process:
-        raise NotFoundException("Proceso no encontrado")
-
-    if process.status in (ProcessStatus.CLOSED.value, ProcessStatus.ARCHIVED.value):
-        raise BusinessRuleException("RB-009: Proceso cerrado o archivado")
-
-    active_jd = max(process.job_descriptions, key=lambda j: j.version, default=None)
-    if not active_jd:
-        raise BusinessRuleException("No hay una JD para mejorar. Sube o crea una JD primero.")
-
-    enhancement_result = await EnhanceJDUseCase().execute(active_jd.jd_raw_text)
-    enhanced_text = enhancement_result["enhanced_jd"]
-
-    next_version = active_jd.version + 1
-
-    new_jd = JobDescription(
-        process_id=process_id,
-        version=next_version,
-        jd_raw_text=enhanced_text,
-        structured_jd={
-            "version": next_version,
-            "raw": enhanced_text,
-            "ai_enhanced": True,
-            "recommendations": enhancement_result["recommendations"],
-            "missing_elements": enhancement_result["missing_elements"],
-        },
-    )
-    db.add(new_jd)
-    await db.commit()
-    await db.refresh(new_jd)
-
-    return {
-        "jd_id": str(new_jd.id),
-        "process_id": str(process_id),
-        "version": new_jd.version,
-        "recommendations": enhancement_result["recommendations"],
-        "missing_elements": enhancement_result["missing_elements"],
-        "created_at": new_jd.created_at.isoformat(),
-    }
 
 
 @router.post("/{process_id}/job-description/upload", status_code=201)
@@ -624,6 +593,34 @@ async def get_process_metrics(
     cost_result = await db.execute(cost_query)
     total_cost = cost_result.scalar() or 0.0
 
+    # Costo desglosado por operacion, agrupado en las 4 categorias que le importan al
+    # recruiter: voz (ElevenLabs), twilio (telefonia), whatsapp, y llm (todo lo demas
+    # basado en OpenAI: extraccion de CV, match, mejora de JD, evaluacion de profiling).
+    by_op_query = (
+        select(CostLog.operation_type, func.sum(CostLog.estimated_cost))
+        .where(CostLog.process_id == process_id)
+        .group_by(CostLog.operation_type)
+    )
+    by_op_result = await db.execute(by_op_query)
+    cost_by_operation = {op: float(cost) for op, cost in by_op_result.all()}
+
+    category_map: dict[str, list[str]] = {
+        "voz": [OperationType.VOICE_CALL.value],
+        "twilio": [OperationType.TWILIO_CALL.value],
+        "whatsapp": [OperationType.WHATSAPP_MESSAGE.value],
+        "llm": [
+            OperationType.CV_EXTRACTION.value,
+            OperationType.CV_MATCH.value,
+            OperationType.JD_ENHANCEMENT.value,
+            OperationType.ANSWER_EVALUATION.value,
+            OperationType.VOICE_TRANSCRIPTION.value,
+        ],
+    }
+    cost_by_category = {
+        category: round(sum(cost_by_operation.get(op, 0.0) for op in ops), 6)
+        for category, ops in category_map.items()
+    }
+
     return {
         "process_id": str(process.id),
         "total_cvs": sum(status_counts.values()),
@@ -631,6 +628,7 @@ async def get_process_metrics(
         "match_distribution": match_counts,
         "total_cost_usd": float(total_cost),
         "budget_max_usd": float(process.budget_max_usd),
+        "cost_by_category": cost_by_category,
     }
 
 

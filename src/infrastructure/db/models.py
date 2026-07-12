@@ -122,6 +122,7 @@ class AITaskType(str, enum.Enum):
     JD_ENHANCEMENT = "JD_ENHANCEMENT"
     VOICE_PROFILING = "VOICE_PROFILING"
     WHATSAPP_MESSAGE = "WHATSAPP_MESSAGE"
+    VOICE_CALL_AGENT = "VOICE_CALL_AGENT"
 
 
 class AIProvider(str, enum.Enum):
@@ -139,6 +140,7 @@ class OperationType(str, enum.Enum):
     VOICE_TRANSCRIPTION = "VOICE_TRANSCRIPTION"
     WHATSAPP_MESSAGE = "WHATSAPP_MESSAGE"
     ANSWER_EVALUATION = "ANSWER_EVALUATION"
+    TWILIO_CALL = "TWILIO_CALL"
 
 
 # Dominio: Identidad y Configuración
@@ -458,6 +460,9 @@ class ProfilingRun(Base):
     advancement_explanation: Mapped[str | None] = mapped_column(TEXT, nullable=True)
     transcription_url: Mapped[str | None] = mapped_column(TEXT, nullable=True)
     transcript_summary: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    # Array de turnos crudo de ElevenLabs: [{role, message, time_in_call_secs}, ...] —
+    # para renderizar la conversacion completa tipo chat en el frontend.
+    transcript_turns: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     call_embedding: Mapped[list | None] = mapped_column(Vector(1536), nullable=True)
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

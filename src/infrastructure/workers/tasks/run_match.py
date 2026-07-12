@@ -107,6 +107,8 @@ def execute_match(
         ).scalar_one_or_none()
 
         if not process:
+            pc.status = CandidateStatus.MATCH_PENDING.value
+            db.commit()
             return {"error": "Process not found"}
 
         # Cambiar a MATCH_PROCESSING al iniciar el match
@@ -121,6 +123,8 @@ def execute_match(
         # RB-001: debe existir una JD
         jds = sorted(process.job_descriptions, key=lambda j: j.version, reverse=True)
         if not jds:
+            pc.status = CandidateStatus.MATCH_PENDING.value
+            db.commit()
             return {"error": "RB-001: No active Job Description for this process"}
 
         active_jd: JobDescription = jds[0]

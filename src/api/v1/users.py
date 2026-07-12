@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.deps import RequireAdmin, get_current_user, get_db
 from src.application.auth.users_use_cases import (
     CreateUserUseCase,
+    DeleteUserUseCase,
     ListUsersUseCase,
     UpdateUserStatusUseCase,
     UpdateUserUseCase,
@@ -132,3 +133,17 @@ async def update_user_status(
     await db.commit()
     await db.refresh(user)
     return UserResponse.from_domain(user)
+
+
+@router.delete("/{user_id}", status_code=204)
+async def delete_user(
+    user_id: uuid.UUID,
+    current_user: User = RequireAdmin,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    repo = UserRepository(db)
+    await DeleteUserUseCase(repo).execute(user_id)
+    from src.infrastructure.db.audit import record_audit
+    record_audit(db, current_user.id, "USER_MANAGEMENT", "User", str(user_id))
+    await db.commit()
+

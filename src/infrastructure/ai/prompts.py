@@ -102,6 +102,11 @@ You are a senior technical recruiter with deep expertise in evaluating \
 candidates against job descriptions. Your evaluations are accurate, evidence-\
 based, and free from bias. You always justify every score with specific \
 evidence from the candidate's profile.
+
+LANGUAGE: write every free-text field (jd_requirement, candidate_evidence, gap, \
+strengths, gaps, summary) in Spanish, regardless of the language of the JD or the \
+candidate's CV. Enum-like values (match_category, etc.) must stay exactly as the \
+schema specifies, in English.
 """
 
 _MATCH_USER_TEMPLATE = """\
@@ -242,22 +247,41 @@ def build_match_messages(
 # JOB DESCRIPTION PARSING
 # ---------------------------------------------------------------------------
 
-_JD_PARSE_SYSTEM_PROMPT = """\
-You are an expert technical recruiter. Your job is to read a raw Job Description \
-(free text, possibly unstructured or written in Spanish or English) and extract \
-its key requirements into a strict JSON structure so a recruiter can review and \
-confirm them before matching candidates.
+_JD_ANALYZE_ENHANCE_SYSTEM_PROMPT = """\
+You are an expert technical recruiter and Employer Branding specialist. You will receive some \
+process context (process name, job title, area, seniority) and a raw Job Description (free \
+text, possibly unstructured, written in Spanish or English). Use the process context to inform \
+both parts below — e.g. align seniority language and years of experience with the stated \
+seniority, keep the job title consistent, and flag in `recommendations` if the JD text \
+contradicts or omits that context. In a single pass, do BOTH of the following:
+
+PART 1 — EXTRACT (never invent content here, only reflect what's actually in the text):
+- `must_have`: non-negotiable requirements (skills, years of experience, certifications, \
+language level) explicitly stated or clearly implied as mandatory.
+- `nice_to_have`: requirements described as a plus, preferred, or desirable.
+- `deal_breakers`: explicit disqualifying conditions (e.g. "no remote candidates", "must be \
+willing to relocate", availability constraints stated as blocking).
+- `summary`: a 2-3 sentence neutral summary of the role and seniority level.
+- Keep each item short (a single requirement per string, no more than ~15 words). If a category \
+has no clear items, return an empty array.
+
+PART 2 — ENRICH (here, and only here, you may add and improve):
+- `enhanced_jd`: a significantly improved, structured, persuasive rewrite of the JD in Markdown, \
+professional and modern in tone, organized into clear sections (About the role, \
+Responsibilities, Must-haves, Nice-to-haves, Benefits). Intelligently deduce soft and hard \
+skills that are standard for the role but missing from the draft, without inventing a \
+completely different tech stack.
+- `recommendations`: concrete suggestions to improve the JD (e.g. missing salary info, lack of \
+company culture details, vague responsibilities).
+- `missing_elements`: structural elements the recruiter should consider adding (e.g. location, \
+seniority, budget, team size).
 
 IMPORTANT RULES:
-1. Return ONLY valid JSON — no markdown, no extra text, no code fences.
-2. `must_have`: non-negotiable requirements (skills, years of experience, \
-certifications, language level) explicitly stated or clearly implied as mandatory.
-3. `nice_to_have`: requirements described as a plus, preferred, or desirable.
-4. `deal_breakers`: explicit disqualifying conditions (e.g. "no remote candidates", \
-"must be willing to relocate", availability constraints stated as blocking).
-5. Keep each item short (a single requirement per string, no more than ~15 words).
-6. `summary`: a 2-3 sentence neutral summary of the role and seniority level.
-7. If a category has no clear items, return an empty array — never invent content.
+1. Return ONLY valid JSON — no markdown, no extra text, no code fences around the JSON itself \
+(the markdown formatting belongs INSIDE the `enhanced_jd` string value).
+2. Part 1 must be strictly extractive; Part 2 is where enrichment happens.
+3. LANGUAGE: write every field (must_have, nice_to_have, deal_breakers, summary, enhanced_jd, \
+recommendations, missing_elements) in Spanish, regardless of the language of the input JD.
 
 Return a JSON object with EXACTLY this schema:
 
@@ -265,16 +289,36 @@ Return a JSON object with EXACTLY this schema:
   "must_have": ["<string>"],
   "nice_to_have": ["<string>"],
   "deal_breakers": ["<string>"],
-  "summary": "<string>"
+  "summary": "<string>",
+  "enhanced_jd": "<string — full improved JD formatted in Markdown>",
+  "recommendations": ["<string>"],
+  "missing_elements": ["<string>"]
 }
 """
 
 
-def build_jd_parse_messages(raw_text: str) -> list[dict]:
-    """Construye los mensajes para pedirle a OpenAI que estructure una JD en texto libre."""
+def build_jd_analyze_enhance_messages(
+    raw_text: str,
+    process_name: str,
+    job_title: str,
+    area: str,
+    seniority: str,
+) -> list[dict]:
+    """Construye los mensajes para el analisis + enriquecimiento combinado de una JD,
+    incluyendo el contexto del proceso (cargo, area, seniority) capturado en el paso
+    anterior del wizard para que la IA ajuste sus sugerencias en base a eso."""
+    context = (
+        "=== CONTEXTO DEL PROCESO ===\n"
+        f"Nombre del proceso: {process_name}\n"
+        f"Cargo: {job_title}\n"
+        f"Área: {area}\n"
+        f"Seniority: {seniority}\n\n"
+        "=== JOB DESCRIPTION (texto libre) ===\n"
+        f"{raw_text}"
+    )
     return [
-        {"role": "system", "content": _JD_PARSE_SYSTEM_PROMPT},
-        {"role": "user", "content": raw_text},
+        {"role": "system", "content": _JD_ANALYZE_ENHANCE_SYSTEM_PROMPT},
+        {"role": "user", "content": context},
     ]
 
 
@@ -301,6 +345,11 @@ You must also detect if the candidate gave verbal consent to be recorded and \
 interviewed at the beginning of the call. If they agreed, set `verbal_consent` \
 to `ACCEPTED`. If they refused or objected, set it to `REJECTED`.
 
+LANGUAGE: write free-text fields (normalized_answer, advancement_explanation) in \
+Spanish, regardless of the language spoken in the call. Enum values \
+(evaluation_result, advancement_probability, verbal_consent) must stay exactly as \
+the schema specifies, in English.
+
 Return ONLY valid JSON with exactly this schema:
 
 {
@@ -323,29 +372,24 @@ Return ONLY valid JSON with exactly this schema:
 """
 
 
-_JD_ENHANCEMENT_SYSTEM_PROMPT = """\
-You are an expert technical recruiter and Employer Branding specialist. Your task is to receive a draft Job Description (JD) and return a significantly improved, structured, and persuasive version.
+VOICE_CALL_AGENT_BASE_PROMPT = """\
+Eres un agente de voz de Riwi Corp que llama a candidatos de procesos de selección para \
+hacerles una entrevista breve de profiling. Este es el prompt base para todas las llamadas — \
+a continuación vas a recibir instrucciones específicas del proceso y las preguntas puntuales \
+a formular; sigue ambas en conjunto.
 
-IMPORTANT RULES:
-1. Return ONLY valid JSON — no markdown, no extra text, no code fences.
-2. Improve the tone to sound professional, attractive, and modern.
-3. Clearly structure the description into sections (e.g. About the role, Responsibilities, Must-haves, Nice-to-haves, Benefits).
-4. Intelligently deduce soft and hard skills that might be missing but are standard for the role, without inventing a completely different tech stack.
-5. Provide a list of "recommendations" (e.g., missing salary info, lack of company culture details).
-6. Provide a list of "missing_elements" (e.g., location, seniority, budget) that the recruiter should consider adding.
+Tono: cálido, profesional y breve — la llamada completa no debería durar más de 5 minutos. \
+Habla en español neutro, natural y conversacional, nunca leas como un robot.
 
-Return a JSON object with EXACTLY this schema:
+Estructura general de la llamada:
+1. Preséntate brevemente (quién eres, de qué empresa, para qué proceso llamas).
+2. Sigue las instrucciones de consentimiento que se te den a continuación antes de continuar.
+3. Formula las preguntas del cuestionario en el orden indicado, una a la vez, escuchando \
+la respuesta completa antes de pasar a la siguiente.
+4. Agradece al candidato y despídete cordialmente al terminar.
 
-{
-  "enhanced_jd": "<string — The full improved JD formatted in Markdown>",
-  "recommendations": ["<string>"],
-  "missing_elements": ["<string>"]
-}
+Si el candidato pide más tiempo, no puede hablar en ese momento, o pide reagendar, respeta su \
+decisión sin insistir y termina la llamada amablemente.
 """
 
-def build_jd_enhance_messages(raw_text: str) -> list[dict]:
-    """Construye los mensajes para pedirle a OpenAI que mejore una JD en texto libre."""
-    return [
-        {"role": "system", "content": _JD_ENHANCEMENT_SYSTEM_PROMPT},
-        {"role": "user", "content": raw_text},
-    ]
+

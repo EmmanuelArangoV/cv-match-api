@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import hmac
 import logging
+import math
 import uuid
 from datetime import UTC, datetime
 from functools import partial
@@ -19,6 +20,7 @@ from src.domain.candidate.state_machine import CandidateStateMachine
 from src.domain.shared.exceptions import BusinessRuleException
 from src.infrastructure.db.database import get_db
 from src.infrastructure.db.models import (
+    AITaskType,
     Candidate,
     CandidateStatus,
     CostLog,
@@ -27,6 +29,7 @@ from src.infrastructure.db.models import (
     ProcessCandidate,
     ProfilingRun,
     ProfilingRunStatus,
+    QuestionSet,
 )
 from src.infrastructure.voice import elevenlabs_client, twilio_client
 from src.infrastructure.workers.tasks.profiling import (
@@ -41,6 +44,10 @@ router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 # Créditos ElevenLabs -> USD, aproximado (400 créditos ~= 1 minuto en plan Creator).
 _ELEVENLABS_CREDITS_PER_USD_MINUTE = 400
 _ELEVENLABS_USD_PER_MINUTE_DEFAULT = 0.09
+
+# Tarifa aproximada de Twilio para llamadas salientes a móviles en Colombia (varía por
+# destino real — ajustar según la factura de Twilio si difiere significativamente).
+_TWILIO_USD_PER_MINUTE_DEFAULT = 0.15
 
 
 def _verify_meta_signature(payload: bytes, signature_header: str | None) -> bool:
@@ -202,7 +209,7 @@ async def twilio_twiml_webhook(
         select(ProfilingRun)
         .where(ProfilingRun.id == uuid.UUID(run_id))
         .options(
-            selectinload(ProfilingRun.question_set),
+            selectinload(ProfilingRun.question_set).selectinload(QuestionSet.questions),
             selectinload(ProfilingRun.process_candidate).selectinload(ProcessCandidate.candidate),
             selectinload(ProfilingRun.process_candidate).selectinload(ProcessCandidate.process),
         )
@@ -232,7 +239,15 @@ async def twilio_twiml_webhook(
         await db.commit()
         return Response(content=_TWIML_HANGUP, media_type="application/xml")
 
-    voice_config = resolve_voice_config(question_set, process)
+    from src.infrastructure.ai.prompts import VOICE_CALL_AGENT_BASE_PROMPT
+    from src.infrastructure.cache.redis_client import get_active_ai_prompt
+
+    universal_prompt = await get_active_ai_prompt(
+        db, AITaskType.VOICE_CALL_AGENT.value, VOICE_CALL_AGENT_BASE_PROMPT
+    )
+    voice_config = resolve_voice_config(
+        question_set, process, pc.whatsapp_consent_status, universal_prompt
+    )
     dynamic_variables = _build_dynamic_variables(pc, process, candidate)
 
     try:
@@ -259,8 +274,11 @@ async def twilio_status_webhook(
     request: Request, run_id: str, db: AsyncSession = Depends(get_db)
 ) -> dict[str, str]:
     """
-    Captura llamadas que nunca llegaron a /twiml (no-answer/busy/failed/canceled) —
-    la unica forma de saber que una llamada jamas conecto, ya que AMD no llega a correr.
+    Dos cosas distintas en el mismo webhook:
+    1. Captura llamadas que nunca llegaron a /twiml (no-answer/busy/failed/canceled) —
+       la unica forma de saber que una llamada jamas conecto, ya que AMD no llega a correr.
+    2. Registra el costo real de Twilio (estimado por duracion) cuando la llamada se
+       completa — Twilio cobra por el tiempo de llamada sin importar si conecto un humano.
     """
     form = await request.form()
     signature = request.headers.get("X-Twilio-Signature")
@@ -274,11 +292,35 @@ async def twilio_status_webhook(
     call_status = str(form.get("CallStatus", ""))
     call_sid = str(form.get("CallSid", ""))
 
-    if call_status not in _NO_CONNECT_CALL_STATUSES:
-        return {"status": "ignored"}
-
     profiling_run = await _get_run_or_none(db, run_id)
     if not profiling_run:
+        return {"status": "ignored"}
+
+    if call_status == "completed" and profiling_run.twilio_call_sid == call_sid:
+        duration_s = int(form.get("CallDuration") or form.get("Duration") or 0)
+        if duration_s > 0:
+            pc_result = await db.execute(
+                select(ProcessCandidate).where(
+                    ProcessCandidate.id == profiling_run.process_candidate_id
+                )
+            )
+            pc = pc_result.scalar_one_or_none()
+            # Twilio factura por minuto completo, redondeando siempre hacia arriba.
+            billed_minutes = math.ceil(duration_s / 60)
+            db.add(
+                CostLog(
+                    process_id=pc.process_id if pc else None,
+                    candidate_id=pc.candidate_id if pc else None,
+                    operation_type=OperationType.TWILIO_CALL.value,
+                    model_used="twilio-voice",
+                    call_duration_s=duration_s,
+                    estimated_cost=round(billed_minutes * _TWILIO_USD_PER_MINUTE_DEFAULT, 6),
+                )
+            )
+            await db.commit()
+        return {"status": "ok"}
+
+    if call_status not in _NO_CONNECT_CALL_STATUSES:
         return {"status": "ignored"}
 
     # Idempotencia: si /twiml ya proceso esta llamada (AMD corrio) o ya se reintento
@@ -299,6 +341,21 @@ def _estimate_elevenlabs_cost_usd(metadata: dict[str, Any]) -> float:
     credits = metadata.get("cost", 0) or 0
     usd_per_minute = _ELEVENLABS_USD_PER_MINUTE_DEFAULT
     return round((credits / _ELEVENLABS_CREDITS_PER_USD_MINUTE) * usd_per_minute, 6)
+
+
+_TRANSCRIPT_SPEAKER_LABEL = {"agent": "Agente", "user": "Candidato"}
+
+
+def _format_transcript_text(turns: list[dict[str, Any]]) -> str:
+    """Convierte el array de turnos de ElevenLabs (role/message) en texto legible
+    para el prompt de evaluacion — antes se le pasaba la lista cruda al prompt."""
+    lines = []
+    for turn in turns:
+        role = _TRANSCRIPT_SPEAKER_LABEL.get(turn.get("role"), turn.get("role") or "?")
+        message = turn.get("message") or ""
+        if message:
+            lines.append(f"{role}: {message}")
+    return "\n".join(lines)
 
 
 @router.post("/elevenlabs/post-call-transcription")
@@ -356,10 +413,12 @@ async def elevenlabs_post_call_webhook(
 
     analysis = data.get("analysis", {}) or {}
     metadata = data.get("metadata", {}) or {}
-    transcript = data.get("transcript", "")
+    raw_transcript = data.get("transcript") or []
+    transcript_text = _format_transcript_text(raw_transcript)
 
     profiling_run.elevenlabs_conversation_id = conversation_id
     profiling_run.transcript_summary = analysis.get("transcript_summary")
+    profiling_run.transcript_turns = raw_transcript
     profiling_run.status = ProfilingRunStatus.COMPLETED.value
     profiling_run.completed_at = datetime.now(UTC)
 
@@ -385,5 +444,5 @@ async def elevenlabs_post_call_webhook(
 
     await db.commit()
 
-    evaluate_profiling_transcription.delay(str(profiling_run.id), transcript)
+    evaluate_profiling_transcription.delay(str(profiling_run.id), transcript_text)
     return {"status": "ok"}
