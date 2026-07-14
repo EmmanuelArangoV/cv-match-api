@@ -1,3 +1,5 @@
+import json
+
 import redis.asyncio as aioredis
 
 from src.config import settings
@@ -78,6 +80,32 @@ def get_active_ai_model_sync(db, task_type: str, provider: str, fallback_model: 
     return val
 
 
+async def get_active_ai_model(db, task_type: str, provider: str, fallback_model: str) -> str:
+    """Variante async de get_active_ai_model_sync, para llamarla desde endpoints FastAPI
+    (AsyncSession) en vez de las tareas de Celery (Session sincrona)."""
+    key = f"ai_model:active:{task_type}:{provider}"
+    cached = await redis_client.get(key)
+    if cached:
+        return cached
+
+    from sqlalchemy import select
+
+    from src.infrastructure.db.models import AIModelConfiguration
+
+    result = await db.execute(
+        select(AIModelConfiguration).where(
+            AIModelConfiguration.task_type == task_type,
+            AIModelConfiguration.provider == provider,
+            AIModelConfiguration.is_active == True,
+        )
+    )
+    model = result.scalar_one_or_none()
+
+    val = model.model_name if model else fallback_model
+    await redis_client.setex(key, 900, val)
+    return val
+
+
 def get_global_setting_sync(db, key: str, default_value: str) -> str:
     redis_key = f"global_setting:{key}"
     cached = redis_client_sync.get(redis_key)
@@ -88,7 +116,24 @@ def get_global_setting_sync(db, key: str, default_value: str) -> str:
     setting = db.query(GlobalBusinessSetting).filter_by(setting_key=key).first()
     
     val = setting.setting_value if setting else default_value
-    
+
     # Cache it for 15 minutes
     redis_client_sync.setex(redis_key, 900, val)
+    return val
+
+
+def get_global_setting_dict_sync(db, key: str, default_value: dict) -> dict:
+    """Igual que get_global_setting_sync pero para settings cuyo valor es un dict
+    (setting_value JSONB con múltiples campos, no un escalar)."""
+    redis_key = f"global_setting:{key}"
+    cached = redis_client_sync.get(redis_key)
+    if cached:
+        return json.loads(cached)
+
+    from src.infrastructure.db.models import GlobalBusinessSetting
+    setting = db.query(GlobalBusinessSetting).filter_by(setting_key=key).first()
+
+    val = setting.setting_value if setting else default_value
+
+    redis_client_sync.setex(redis_key, 900, json.dumps(val))
     return val

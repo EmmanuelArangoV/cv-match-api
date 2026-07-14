@@ -44,3 +44,4 @@ async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)) -> d
 @router.post("/logout", status_code=204)
 async def logout(body: RefreshRequest) -> None:
     await LogoutUseCase().execute(body.refresh_token)
+

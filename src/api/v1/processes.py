@@ -392,6 +392,7 @@ async def parse_job_description(
         raise NotFoundException("Proceso no encontrado")
 
     return await ParseJobDescriptionUseCase().execute(
+        db,
         body.jd_raw_text,
         process_name=process.name,
         job_title=process.job_title,

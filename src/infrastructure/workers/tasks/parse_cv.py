@@ -158,7 +158,7 @@ def _call_openai(content_blocks: list[dict], client: OpenAI, prompt: str, model:
     content.extend(content_blocks)
 
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model=model,
         messages=[{"role": "user", "content": content}],
         response_format={"type": "json_object"},
         max_tokens=4096,
@@ -287,7 +287,7 @@ def parse_cv(
                 process_id=proc_uuid,
                 candidate_id=cand_uuid,
                 operation_type=OperationType.CV_EXTRACTION.value,
-                model_used="gpt-4o",
+                model_used=model,
                 tokens_input=tokens_in,
                 tokens_output=tokens_out,
                 estimated_cost=estimated_cost,

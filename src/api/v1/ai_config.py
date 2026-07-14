@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import RequireAdmin, get_current_user
+from src.domain.match.value_objects import MatchThresholds
 from src.domain.shared.exceptions import NotFoundException
 from src.infrastructure.db.database import get_db
 from src.infrastructure.db.models import (
@@ -38,6 +39,7 @@ def _serialize_prompt(p: AIPrompt) -> dict:
         "system_prompt_text": p.system_prompt_text,
         "is_active": p.is_active,
         "updated_by": str(p.updated_by) if p.updated_by else None,
+        "created_at": p.created_at.isoformat(),
         "updated_at": p.updated_at.isoformat(),
     }
 
@@ -111,6 +113,11 @@ async def activate_model(
 
     await db.commit()
     await db.refresh(model)
+
+    from src.infrastructure.cache.redis_client import redis_client
+    if redis_client:
+        await redis_client.delete(f"ai_model:active:{model.task_type}:{model.provider}")
+
     return _serialize_model(model)
 
 
@@ -159,6 +166,41 @@ async def create_prompt(
     db.add(prompt)
     await db.commit()
     await db.refresh(prompt)
+
+    if body.activate:
+        from src.infrastructure.cache.redis_client import redis_client
+        if redis_client:
+            await redis_client.delete(f"ai_prompt:active:{body.task_type}")
+
+    return _serialize_prompt(prompt)
+
+
+@router.patch("/prompts/{prompt_id}/activate")
+async def activate_prompt(
+    prompt_id: uuid.UUID,
+    current_user: User = RequireAdmin,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Reactiva una versión existente (ej. volver a una anterior) sin editar su texto:
+    desactiva las demás versiones del mismo task_type y activa esta."""
+    prompt = await db.get(AIPrompt, prompt_id)
+    if not prompt:
+        raise NotFoundException("Versión de prompt no encontrada")
+
+    siblings = await db.execute(
+        select(AIPrompt).where(AIPrompt.task_type == prompt.task_type)
+    )
+    for sibling in siblings.scalars().all():
+        sibling.is_active = sibling.id == prompt.id
+        sibling.updated_by = current_user.id
+
+    await db.commit()
+    await db.refresh(prompt)
+
+    from src.infrastructure.cache.redis_client import redis_client
+    if redis_client:
+        await redis_client.delete(f"ai_prompt:active:{prompt.task_type}")
+
     return _serialize_prompt(prompt)
 
 
@@ -188,6 +230,9 @@ async def update_global_setting(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Upsert: crea la fila si `setting_key` no existe todavía (no hay seed de datos)."""
+    if setting_key == "match_thresholds":
+        MatchThresholds.from_dict(body.setting_value)  # valida 0 <= low <= medium <= high <= 100
+
     result = await db.execute(
         select(GlobalBusinessSetting).where(GlobalBusinessSetting.setting_key == setting_key)
     )

@@ -97,7 +97,7 @@ Now extract all information from the CV images provided.
 # MATCH CV vs JD
 # ---------------------------------------------------------------------------
 
-_MATCH_SYSTEM_PROMPT = """\
+MATCH_SYSTEM_PROMPT = """\
 You are a senior technical recruiter with deep expertise in evaluating \
 candidates against job descriptions. Your evaluations are accurate, evidence-\
 based, and free from bias. You always justify every score with specific \
@@ -147,10 +147,10 @@ For each category:
 overall_score = sum of all weighted_scores (0–100, rounded to 2 decimals).
 
 match_category rules:
-- HIGH: overall_score >= 75
-- MEDIUM: overall_score >= 50 and < 75
-- LOW: overall_score >= 30 and < 50
-- NOT_RECOMMENDED: overall_score < 30
+- HIGH: overall_score >= {th_high}
+- MEDIUM: overall_score >= {th_medium} and < {th_high}
+- LOW: overall_score >= {th_low} and < {th_medium}
+- NOT_RECOMMENDED: overall_score < {th_low}
 
 Return a JSON object with EXACTLY this schema:
 
@@ -218,6 +218,7 @@ def build_match_messages(
     normalized_cv: dict,
     jd_text: str,
     weights: dict,
+    thresholds: dict,
     system_prompt: str = None,
     user_template: str = None,
 ) -> list[dict]:
@@ -225,6 +226,7 @@ def build_match_messages(
     Builds the messages list for the OpenAI chat completions API.
     weights must have keys: technical_skills, relevant_experience, seniority,
     industry_domain, languages, education_certifications (all integers summing to 100).
+    thresholds must have keys: high, medium, low (0 <= low <= medium <= high <= 100).
     """
     template = user_template or _MATCH_USER_TEMPLATE
     user_content = template.format(
@@ -236,9 +238,12 @@ def build_match_messages(
         w_industry_domain=weights["industry_domain"],
         w_languages=weights["languages"],
         w_education_certifications=weights["education_certifications"],
+        th_high=thresholds["high"],
+        th_medium=thresholds["medium"],
+        th_low=thresholds["low"],
     )
     return [
-        {"role": "system", "content": system_prompt or _MATCH_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt or MATCH_SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
     ]
 
@@ -247,7 +252,7 @@ def build_match_messages(
 # JOB DESCRIPTION PARSING
 # ---------------------------------------------------------------------------
 
-_JD_ANALYZE_ENHANCE_SYSTEM_PROMPT = """\
+JD_ANALYZE_ENHANCE_SYSTEM_PROMPT = """\
 You are an expert technical recruiter and Employer Branding specialist. You will receive some \
 process context (process name, job title, area, seniority) and a raw Job Description (free \
 text, possibly unstructured, written in Spanish or English). Use the process context to inform \
@@ -303,6 +308,7 @@ def build_jd_analyze_enhance_messages(
     job_title: str,
     area: str,
     seniority: str,
+    system_prompt: str | None = None,
 ) -> list[dict]:
     """Construye los mensajes para el analisis + enriquecimiento combinado de una JD,
     incluyendo el contexto del proceso (cargo, area, seniority) capturado en el paso
@@ -317,7 +323,7 @@ def build_jd_analyze_enhance_messages(
         f"{raw_text}"
     )
     return [
-        {"role": "system", "content": _JD_ANALYZE_ENHANCE_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt or JD_ANALYZE_ENHANCE_SYSTEM_PROMPT},
         {"role": "user", "content": context},
     ]
 

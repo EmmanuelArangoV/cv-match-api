@@ -14,8 +14,13 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import selectinload, sessionmaker
 
 from src.config import settings
-from src.domain.match.value_objects import MatchWeights
-from src.infrastructure.ai.prompts import build_match_messages
+from src.domain.match.value_objects import MatchThresholds, MatchWeights
+from src.infrastructure.ai.prompts import MATCH_SYSTEM_PROMPT, build_match_messages
+from src.infrastructure.cache.redis_client import (
+    get_active_ai_model_sync,
+    get_active_ai_prompt_sync,
+    get_global_setting_dict_sync,
+)
 from src.infrastructure.workers.celery_app import celery_app
 
 _engine = create_engine(settings.database_url_sync)
@@ -34,16 +39,21 @@ def _call_openai_match(
     normalized_cv: dict,
     jd_text: str,
     weights: dict,
+    thresholds: dict,
+    system_prompt: str,
+    model: str,
     client: OpenAI,
 ) -> tuple[dict, int, int]:
-    """Llama a gpt-4o con el prompt de match y retorna (resultado_json, tokens_in, tokens_out)."""
+    """Llama a OpenAI con el prompt de match y retorna (resultado_json, tokens_in, tokens_out)."""
     messages = build_match_messages(
         normalized_cv=normalized_cv,
         jd_text=jd_text,
         weights=weights,
+        thresholds=thresholds,
+        system_prompt=system_prompt,
     )
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model=model,
         messages=messages,
         response_format={"type": "json_object"},
         max_tokens=4096,
@@ -136,27 +146,35 @@ def execute_match(
         else:
             weights = MatchWeights.default().to_dict()
 
+        # Obtener umbrales de clasificación (configurables desde ajustes, global)
+        raw_thresholds = get_global_setting_dict_sync(
+            db, "match_thresholds", MatchThresholds.default().to_dict()
+        )
+        thresholds = MatchThresholds.from_dict(raw_thresholds)
+
+        # Prompt y modelo activos (configurables desde ajustes), con fallback al default de código
+        system_prompt = get_active_ai_prompt_sync(db, "CV_MATCH", MATCH_SYSTEM_PROMPT)
+        model = get_active_ai_model_sync(db, "CV_MATCH", "OPENAI", "gpt-4o")
+
         # Llamar a OpenAI
         client = _get_openai()
         match_result, tokens_in, tokens_out = _call_openai_match(
             normalized_cv=candidate.normalized_cv,
             jd_text=jd_text,
             weights=weights,
+            thresholds=thresholds.to_dict(),
+            system_prompt=system_prompt,
+            model=model,
             client=client,
         )
 
         # Parsear resultado
         overall_score = float(match_result.get("overall_score", 0))
-        raw_category = match_result.get("match_category", "NOT_RECOMMENDED")
 
-        # Mapear categoría al enum
-        category_map = {
-            "HIGH": MatchCategory.HIGH,
-            "MEDIUM": MatchCategory.MEDIUM,
-            "LOW": MatchCategory.LOW,
-            "NOT_RECOMMENDED": MatchCategory.NOT_RECOMMENDED,
-        }
-        match_category = category_map.get(raw_category, MatchCategory.NOT_RECOMMENDED)
+        # match_category se calcula en Python con los umbrales configurados, no se confía en
+        # el valor que devuelve el LLM — así un cambio de umbral en ajustes se refleja siempre
+        # con exactitud, sin depender de que el modelo aplique bien la regla del prompt.
+        match_category = MatchCategory(thresholds.category_for(overall_score))
 
         # Guardar resultado
         pc.match_percentage = round(overall_score, 2)
@@ -170,7 +188,7 @@ def execute_match(
             process_id=proc_uuid,
             candidate_id=candidate.id,
             operation_type=OperationType.CV_MATCH.value,
-            model_used="gpt-4o",
+            model_used=model,
             tokens_input=tokens_in,
             tokens_output=tokens_out,
             estimated_cost=estimated_cost,
