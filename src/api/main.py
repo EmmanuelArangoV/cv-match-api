@@ -19,6 +19,7 @@ from src.api.v1 import (
     reports,
     users,
     webhooks,
+    system,
 )
 from src.config import settings
 from src.domain.shared.exceptions import (
@@ -99,6 +100,7 @@ app.include_router(users.router, prefix="/api/v1")
 app.include_router(feedback.router, prefix="/api/v1")
 app.include_router(audit.router, prefix="/api/v1")
 app.include_router(reports.router, prefix="/api/v1")
+app.include_router(system.router, prefix="/api/v1")
 
 if not settings.is_production:
     app.include_router(debug.router, prefix="/api/v1")
