@@ -562,3 +562,23 @@ class AIFeedback(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     process_candidate: Mapped["ProcessCandidate"] = relationship()
+
+
+class NotificationModel(Base):
+    __tablename__ = "notifications"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    process_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("hiring_processes.id", ondelete="SET NULL"), nullable=True
+    )
+    category: Mapped[str] = mapped_column(String(50), nullable=False, default="SYSTEM_INFO")
+    type: Mapped[str] = mapped_column(String(20), nullable=False, default="INFO") # INFO, SUCCESS, WARNING, ALERT
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(TEXT, nullable=False)
+    link: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+

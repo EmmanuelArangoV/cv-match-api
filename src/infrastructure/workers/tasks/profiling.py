@@ -261,6 +261,19 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
             profiling_run.advancement_explanation = advancement.explanation
             profiling_run.call_consent_status = result_data.get("verbal_consent", "ACCEPTED")
 
+            from src.application.notifications.service import create_notification_sync, check_and_notify_budget_sync
+            if pc:
+                create_notification_sync(
+                    db,
+                    title="Profiling completado",
+                    description=f"Se completó la evaluación de profiling por voz para un candidato en el proceso.",
+                    category="PROFILING_COMPLETED",
+                    type="SUCCESS",
+                    process_id=pc.process_id,
+                    link=f"/app/profiling",
+                )
+                check_and_notify_budget_sync(db, pc.process_id)
+
             db.commit()
             return {"status": "EVALUATED", "advancement_probability": advancement.level.value}
 

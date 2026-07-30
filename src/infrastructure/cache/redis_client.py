@@ -9,6 +9,9 @@ _is_tls = settings.redis_url.startswith("rediss://")
 redis_client: aioredis.Redis = aioredis.from_url(
     settings.redis_url,
     decode_responses=True,
+    retry_on_timeout=True,
+    health_check_interval=30,
+    socket_keepalive=True,
     **({"ssl_cert_reqs": "none", "ssl_check_hostname": False} if _is_tls else {}),
 )
 import redis
@@ -16,6 +19,9 @@ import redis
 redis_client_sync: redis.Redis = redis.from_url(
     settings.redis_url,
     decode_responses=True,
+    retry_on_timeout=True,
+    health_check_interval=30,
+    socket_keepalive=True,
     **({"ssl_cert_reqs": "none", "ssl_check_hostname": False} if _is_tls else {}),
 )
 
@@ -110,7 +116,7 @@ def get_global_setting_sync(db, key: str, default_value: str) -> str:
     redis_key = f"global_setting:{key}"
     cached = redis_client_sync.get(redis_key)
     if cached:
-        return cached.decode('utf-8')
+        return cached if isinstance(cached, str) else cached.decode('utf-8')
     
     from src.infrastructure.db.models import GlobalBusinessSetting
     setting = db.query(GlobalBusinessSetting).filter_by(setting_key=key).first()

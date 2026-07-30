@@ -143,6 +143,19 @@ async def create_process(
     await db.commit()
     await db.refresh(process)
 
+    from src.application.notifications.service import create_notification_async
+    await create_notification_async(
+        db,
+        title="Nuevo proceso creado",
+        description=f"Se creó el proceso '{process.name}' para el cargo {process.job_title} en el área {process.area}.",
+        category="PROCESS_CREATED",
+        type="INFO",
+        user_id=current_user.id,
+        process_id=process.id,
+        link=f"/app/procesos/{process.id}",
+    )
+    await db.commit()
+
     return {
         "process_id": str(process.id),
         "name": process.name,

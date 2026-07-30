@@ -226,9 +226,9 @@ async def twilio_twiml_webhook(
         logger.error(f"[twilio][twiml] ProfilingRun {run_id} no encontrado")
         return Response(content=_TWIML_HANGUP, media_type="application/xml")
 
-    if answered_by in _MACHINE_ANSWERED_BY or answered_by in (None, "unknown"):
+    if answered_by in _MACHINE_ANSWERED_BY:
         profiling_run.status = ProfilingRunStatus.VOICEMAIL_DETECTED.value
-        profiling_run.amd_result = str(answered_by or "unknown")
+        profiling_run.amd_result = str(answered_by or "machine")
         await db.commit()
         retry_or_fail_profiling_call.delay(str(profiling_run.id), f"AMD:{answered_by}")
         return Response(content=_TWIML_HANGUP, media_type="application/xml")

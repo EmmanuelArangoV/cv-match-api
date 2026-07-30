@@ -13,6 +13,7 @@ from src.api.v1 import (
     feedback,
     match,
     metrics,
+    notifications,
     processes,
     profiling,
     question_sets,
@@ -99,6 +100,7 @@ app.include_router(ai_config.router, prefix="/api/v1")
 app.include_router(users.router, prefix="/api/v1")
 app.include_router(feedback.router, prefix="/api/v1")
 app.include_router(audit.router, prefix="/api/v1")
+app.include_router(notifications.router, prefix="/api/v1")
 app.include_router(reports.router, prefix="/api/v1")
 app.include_router(system.router, prefix="/api/v1")
 

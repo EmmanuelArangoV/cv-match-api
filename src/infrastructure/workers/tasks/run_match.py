@@ -205,6 +205,20 @@ def execute_match(
 
         if remaining == 0:
             process.status = ProcessStatus.MATCH_DONE.value
+            from src.application.notifications.service import create_notification_sync
+            create_notification_sync(
+                db,
+                title="Match completado",
+                description=f"Se completó la evaluación de match para el proceso '{process.name}'.",
+                category="MATCH_COMPLETED",
+                type="SUCCESS",
+                process_id=proc_uuid,
+                user_id=process.recruiter_id,
+                link=f"/app/procesos/{proc_uuid}",
+            )
+
+        from src.application.notifications.service import check_and_notify_budget_sync
+        check_and_notify_budget_sync(db, proc_uuid)
 
         db.commit()
 
