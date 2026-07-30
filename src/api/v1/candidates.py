@@ -278,3 +278,84 @@ async def get_candidate_normalized_cv_file(
 
     presigned = await r2_client.generate_presigned_url(r2_key, expires_in=3600)
     return RedirectResponse(url=presigned, status_code=302)
+
+
+class UpdateCandidateBody(BaseModel):
+    name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    city: str | None = None
+
+
+@router.patch("/{process_id}/candidates/{process_candidate_id}")
+async def update_candidate(
+    process_id: uuid.UUID,
+    process_candidate_id: uuid.UUID,
+    body: UpdateCandidateBody,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    repo = CandidateRepository(db)
+    pc = await repo.find_process_candidate_by_id(process_candidate_id)
+
+    if not pc or pc.process_id != process_id:
+        raise NotFoundException("Candidato no encontrado en este proceso")
+
+    candidate = pc.candidate
+
+    if body.name is not None and body.name.strip():
+        name_parts = body.name.strip().split(" ", 1)
+        candidate.name = name_parts[0]
+        candidate.last_name = name_parts[1] if len(name_parts) > 1 else ""
+
+    if body.email is not None and body.email.strip():
+        candidate.email = body.email.strip()
+
+    if body.phone is not None:
+        candidate.phone = body.phone.strip() if body.phone.strip() else None
+
+    if body.city is not None:
+        prof = dict(candidate.normalized_cv or {})
+        prof["location"] = body.city.strip() if body.city.strip() else ""
+        candidate.normalized_cv = prof
+
+    from src.infrastructure.db.audit import record_audit
+
+    record_audit(db, current_user.id, "UPDATE_CANDIDATE", "ProcessCandidate", pc.id)
+    await db.commit()
+    await db.refresh(candidate)
+
+    return {
+        "status": "updated",
+        "candidate": {
+            "process_candidate_id": str(pc.id),
+            "name": f"{candidate.name} {candidate.last_name}".strip(),
+            "email": candidate.email,
+            "phone": candidate.phone,
+            "city": body.city,
+        },
+    }
+
+
+@router.delete("/{process_id}/candidates/{process_candidate_id}")
+async def delete_candidate(
+    process_id: uuid.UUID,
+    process_candidate_id: uuid.UUID,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    repo = CandidateRepository(db)
+    pc = await repo.find_process_candidate_by_id(process_candidate_id)
+
+    if not pc or pc.process_id != process_id:
+        raise NotFoundException("Candidato no encontrado en este proceso")
+
+    from src.infrastructure.db.audit import record_audit
+
+    record_audit(db, current_user.id, "DELETE_CANDIDATE_FROM_PROCESS", "ProcessCandidate", pc.id)
+
+    await repo.delete_process_candidate(pc)
+    await db.commit()
+
+    return {"status": "deleted", "process_candidate_id": str(process_candidate_id)}
+

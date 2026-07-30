@@ -352,9 +352,10 @@ interviewed at the beginning of the call. If they agreed, set `verbal_consent` \
 to `ACCEPTED`. If they refused or objected, set it to `REJECTED`.
 
 LANGUAGE: write free-text fields (normalized_answer, advancement_explanation) in \
-Spanish, regardless of the language spoken in the call. Enum values \
-(evaluation_result, advancement_probability, verbal_consent) must stay exactly as \
-the schema specifies, in English.
+Spanish, regardless of the language spoken in the call. Ensure normalized_answer is \
+a clean, concise summary of the candidate's answer without filler words (like 'eh', \
+'este', 'bueno', 'mmm'). Enum values (evaluation_result, advancement_probability, \
+verbal_consent) must stay exactly as the schema specifies, in English.
 
 Return ONLY valid JSON with exactly this schema:
 
@@ -363,7 +364,7 @@ Return ONLY valid JSON with exactly this schema:
     {
       "question_id": "<uuid from input>",
       "transcription_snippet": "<the exact part of the transcript corresponding to this answer>",
-      "normalized_answer": "<summary of what the candidate said>",
+      "normalized_answer": "<respuesta limpia, concisa y directa en español sin muletillas>",
       "evaluation_result": "<pass, fail, or neutral>",
       "detected_keywords": ["<string>"],
       "confidence_score": <number 0.0 to 1.0>,

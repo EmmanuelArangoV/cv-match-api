@@ -73,3 +73,7 @@ class CandidateRepository:
             select(ProcessCandidate).where(ProcessCandidate.process_id == process_id)
         )
         return len(result.scalars().all())
+
+    async def delete_process_candidate(self, pc: ProcessCandidate) -> None:
+        await self._db.delete(pc)
+

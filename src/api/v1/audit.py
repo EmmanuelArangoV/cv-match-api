@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,14 +10,18 @@ router = APIRouter(prefix="/audit-logs", tags=["Audit"])
 
 @router.get("")
 async def list_audit_logs(
-    limit: int = Query(50, ge=1, le=100),
+    limit: int = Query(10, ge=1, le=100),
     offset: int = Query(0, ge=0),
     action: str | None = None,
     entity_type: str | None = None,
     current_user: User = RequireAdmin,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    query = select(AuditLog).order_by(AuditLog.created_at.desc())
+    query = (
+        select(AuditLog, User.name.label("user_name"), User.last_name.label("user_last_name"))
+        .outerjoin(User, AuditLog.user_id == User.id)
+        .order_by(AuditLog.created_at.desc())
+    )
 
     if action:
         query = query.where(AuditLog.action == action)
@@ -25,7 +29,7 @@ async def list_audit_logs(
         query = query.where(AuditLog.entity_type == entity_type)
 
     result = await db.execute(query.offset(offset).limit(limit))
-    logs = result.scalars().all()
+    rows = result.all()
 
     return {
         "limit": limit,
@@ -34,6 +38,7 @@ async def list_audit_logs(
             {
                 "id": str(log.id),
                 "user_id": str(log.user_id) if log.user_id else None,
+                "user_name": f"{user_name or ''} {user_last_name or ''}".strip() or None,
                 "action": log.action,
                 "entity_type": log.entity_type,
                 "entity_id": str(log.entity_id) if log.entity_id else None,
@@ -42,6 +47,6 @@ async def list_audit_logs(
                 "ip_address": log.ip_address,
                 "created_at": log.created_at.isoformat(),
             }
-            for log in logs
+            for log, user_name, user_last_name in rows
         ]
     }

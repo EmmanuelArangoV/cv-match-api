@@ -1,7 +1,7 @@
 import asyncio
 import uuid
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -211,6 +211,65 @@ class OverrideProfilingRequest(BaseModel):
     advancement_explanation: str
 
 
+async def _ensure_run_transcript_and_answers(db: AsyncSession, run: ProfilingRun):
+    """
+    Si un ProfilingRun completado no tiene transcript_turns o no tiene respuestas evaluadas,
+    obtiene la información desde la API de ElevenLabs en vivo, la persiste y ejecuta la evaluación.
+    """
+    if run.status != ProfilingRunStatus.COMPLETED.value or not run.elevenlabs_conversation_id:
+        return
+
+    need_turns = not run.transcript_turns
+    ans_res = await db.execute(
+        select(ProfilingAnswer).where(ProfilingAnswer.profiling_run_id == run.id)
+    )
+    answers = ans_res.scalars().all()
+    need_answers = len(answers) == 0
+
+    if not need_turns and not need_answers:
+        return
+
+    from src.infrastructure.voice.elevenlabs_client import get_elevenlabs_client
+
+    def _fetch_conv():
+        client = get_elevenlabs_client()
+        return client.conversational_ai.conversations.get(run.elevenlabs_conversation_id)
+
+    try:
+        conv = await asyncio.to_thread(_fetch_conv)
+    except Exception as exc:
+        return
+
+    turns = []
+    lines = []
+    if conv.transcript:
+        for t in conv.transcript:
+            msg = getattr(t, "message", None) or ""
+            role = getattr(t, "role", "user")
+            time_secs = getattr(t, "time_in_call_secs", None)
+            turns.append({
+                "role": role,
+                "message": msg,
+                "time_in_call_secs": time_secs
+            })
+            if msg:
+                speaker = "Agente" if role == "agent" else "Candidato"
+                lines.append(f"{speaker}: {msg}")
+
+    if need_turns and turns:
+        run.transcript_turns = turns
+
+    if conv.analysis and conv.analysis.transcript_summary:
+        run.transcript_summary = conv.analysis.transcript_summary
+
+    await db.commit()
+
+    if need_answers and lines:
+        transcript_text = "\n".join(lines)
+        from src.infrastructure.workers.tasks.profiling import evaluate_profiling_transcription
+        await asyncio.to_thread(evaluate_profiling_transcription, str(run.id), transcript_text)
+
+
 @global_router.get("/runs/{run_id}")
 async def get_profiling_run(
     run_id: uuid.UUID,
@@ -227,19 +286,21 @@ async def get_profiling_run(
     run = result.scalar_one_or_none()
     if not run:
         raise NotFoundException("ProfilingRun no encontrado")
+    await _ensure_run_transcript_and_answers(db, run)
     return _serialize_run(run, _candidate_name(run))
 
 
 @global_router.get("/runs/{run_id}/audio")
 async def get_profiling_run_audio(
     run_id: uuid.UUID,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     """
     Proxea el audio de la llamada directo desde la API de ElevenLabs usando el
-    elevenlabs_conversation_id ya guardado — no lo persistimos nosotros, se pide
-    en vivo cada vez (mas simple que subirlo a R2 aparte).
+    elevenlabs_conversation_id ya guardado. Soporta peticiones de rango HTTP (206)
+    y cabeceras Accept-Ranges para permitir libre navegación/seek en la barra del reproductor.
     """
     from src.infrastructure.voice.elevenlabs_client import get_elevenlabs_client
 
@@ -259,7 +320,31 @@ async def get_profiling_run_audio(
     except Exception as exc:
         raise BusinessRuleException(f"No se pudo obtener el audio de ElevenLabs: {exc}") from exc
 
-    return Response(content=audio_bytes, media_type="audio/mpeg")
+    total_len = len(audio_bytes)
+    range_header = request.headers.get("range")
+
+    headers = {
+        "Content-Type": "audio/mpeg",
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(total_len),
+    }
+
+    if range_header and range_header.startswith("bytes="):
+        try:
+            byte_range = range_header.replace("bytes=", "").split("-")
+            start = int(byte_range[0]) if byte_range[0] else 0
+            end = int(byte_range[1]) if len(byte_range) > 1 and byte_range[1] else total_len - 1
+            if start >= total_len:
+                return Response(status_code=416, headers=headers)
+            end = min(end, total_len - 1)
+            chunk = audio_bytes[start : end + 1]
+            headers["Content-Range"] = f"bytes {start}-{end}/{total_len}"
+            headers["Content-Length"] = str(len(chunk))
+            return Response(content=chunk, status_code=206, headers=headers)
+        except Exception:
+            pass
+
+    return Response(content=audio_bytes, media_type="audio/mpeg", headers=headers)
 
 
 @global_router.get("/runs/{run_id}/answers")
@@ -268,6 +353,10 @@ async def get_profiling_answers(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    run = await db.get(ProfilingRun, run_id)
+    if run:
+        await _ensure_run_transcript_and_answers(db, run)
+
     result = await db.execute(
         select(ProfilingAnswer, ProfilingQuestion)
         .join(ProfilingQuestion, ProfilingAnswer.question_id == ProfilingQuestion.id)

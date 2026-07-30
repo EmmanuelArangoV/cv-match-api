@@ -420,12 +420,37 @@ async def elevenlabs_post_call_webhook(
 
     analysis = data.get("analysis", {}) or {}
     metadata = data.get("metadata", {}) or {}
-    raw_transcript = data.get("transcript") or []
-    transcript_text = _format_transcript_text(raw_transcript)
+    raw_transcript = (
+        data.get("transcript")
+        or data.get("conversation_transcript")
+        or data.get("turns")
+        or []
+    )
+
+    formatted_turns = []
+    for t in raw_transcript:
+        if isinstance(t, dict):
+            formatted_turns.append(
+                {
+                    "role": t.get("role", "user"),
+                    "message": t.get("message") or t.get("text") or "",
+                    "time_in_call_secs": t.get("time_in_call_secs") or t.get("time_in_call"),
+                }
+            )
+        elif hasattr(t, "role"):
+            formatted_turns.append(
+                {
+                    "role": getattr(t, "role", "user"),
+                    "message": getattr(t, "message", "") or "",
+                    "time_in_call_secs": getattr(t, "time_in_call_secs", None),
+                }
+            )
+
+    transcript_text = _format_transcript_text(formatted_turns)
 
     profiling_run.elevenlabs_conversation_id = conversation_id
     profiling_run.transcript_summary = analysis.get("transcript_summary")
-    profiling_run.transcript_turns = raw_transcript
+    profiling_run.transcript_turns = formatted_turns
     profiling_run.status = ProfilingRunStatus.COMPLETED.value
     profiling_run.completed_at = datetime.now(UTC)
 
