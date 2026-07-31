@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,11 +13,16 @@ router = APIRouter(prefix="/metrics", tags=["Metrics"])
 
 @router.get("/dashboard")
 async def get_metrics_dashboard(
+    process_id: UUID | None = Query(default=None),
     current_user: User = RequireRecruiter,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Agrega CostLog por proceso, usuario, tipo de operación y día."""
-    total_result = await db.execute(select(func.coalesce(func.sum(CostLog.estimated_cost), 0)))
+    cost_filter = [CostLog.process_id == process_id] if process_id else []
+
+    total_result = await db.execute(
+        select(func.coalesce(func.sum(CostLog.estimated_cost), 0)).where(*cost_filter)
+    )
     total_cost_usd = float(total_result.scalar_one())
 
     by_process_result = await db.execute(
@@ -26,6 +33,7 @@ async def get_metrics_dashboard(
             func.count(func.distinct(CostLog.candidate_id)),
         )
         .join(HiringProcess, CostLog.process_id == HiringProcess.id)
+        .where(*cost_filter)
         .group_by(CostLog.process_id, HiringProcess.name)
         .order_by(func.sum(CostLog.estimated_cost).desc())
     )
@@ -47,6 +55,7 @@ async def get_metrics_dashboard(
             func.sum(CostLog.estimated_cost),
         )
         .join(User, CostLog.user_id == User.id)
+        .where(*cost_filter)
         .group_by(CostLog.user_id, User.name, User.last_name)
         .order_by(func.sum(CostLog.estimated_cost).desc())
     )
@@ -64,7 +73,9 @@ async def get_metrics_dashboard(
             CostLog.operation_type,
             func.sum(CostLog.estimated_cost),
             func.count(CostLog.id),
-        ).group_by(CostLog.operation_type)
+        )
+        .where(*cost_filter)
+        .group_by(CostLog.operation_type)
     )
     cost_by_operation = [
         {
@@ -80,6 +91,7 @@ async def get_metrics_dashboard(
             func.date_trunc("day", CostLog.created_at).label("day"),
             func.sum(CostLog.estimated_cost),
         )
+        .where(*cost_filter)
         .group_by("day")
         .order_by("day")
     )

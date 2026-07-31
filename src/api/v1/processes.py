@@ -7,7 +7,7 @@ from docx import Document as DocxDocument
 from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -22,6 +22,7 @@ from src.domain.shared.exceptions import BusinessRuleException, NotFoundExceptio
 from src.infrastructure.db.database import get_db
 from src.infrastructure.db.models import (
     CostLog,
+    GlobalBusinessSetting,
     HiringProcess,
     JobDescription,
     OperationType,
@@ -29,6 +30,8 @@ from src.infrastructure.db.models import (
     ProcessStatus,
     QuestionSet,
     User,
+    UserRole,
+    UserStatus,
 )
 from src.infrastructure.storage import r2_client
 
@@ -75,6 +78,7 @@ class CreateProcessRequest(BaseModel):
     seniority: str = Field(..., min_length=1, max_length=50)
     budget_max_usd: float = Field(default=0.0, ge=0)
     match_weights_override: dict | None = None
+    recruiter_id: uuid.UUID | None = None
 
 
 class CreateJobDescriptionRequest(BaseModel):
@@ -125,9 +129,45 @@ async def create_process(
 ) -> dict:
     from src.domain.match.value_objects import MatchWeights
 
+    total_budget_setting = await db.scalar(
+        select(GlobalBusinessSetting.setting_value).where(
+            GlobalBusinessSetting.setting_key == "platform_total_budget"
+        )
+    )
+    configured_limit = (
+        total_budget_setting.get("amount", 0)
+        if isinstance(total_budget_setting, dict)
+        else 0
+    )
+    total_budget = float(configured_limit or 0)
+    if total_budget > 0:
+        total_spent = float(
+            await db.scalar(select(func.coalesce(func.sum(CostLog.estimated_cost), 0)))
+        )
+        if total_spent >= total_budget:
+            raise BusinessRuleException(
+                f"El presupuesto total configurado (${total_budget:.2f} USD) ya fue alcanzado. "
+                "No se pueden crear más procesos."
+            )
+
     # Validar pesos si se envían
     if body.match_weights_override:
         MatchWeights.from_dict(body.match_weights_override)
+
+    recruiter_id = current_user.id
+    if body.recruiter_id:
+        if current_user.role not in [UserRole.ADMIN.value, UserRole.TA_LEADER.value]:
+            raise BusinessRuleException("No tienes permiso para asignar procesos a otros recruiters.")
+        assigned_recruiter = await db.scalar(select(User).where(User.id == body.recruiter_id))
+        if (
+            not assigned_recruiter
+            or assigned_recruiter.role != UserRole.RECRUITER.value
+            or assigned_recruiter.status != UserStatus.ACTIVE.value
+        ):
+            raise BusinessRuleException("Selecciona un recruiter activo para asignar el proceso.")
+        recruiter_id = assigned_recruiter.id
+    elif current_user.role == UserRole.TA_LEADER.value:
+        raise BusinessRuleException("Selecciona un recruiter responsable para crear el proceso.")
 
     process = HiringProcess(
         name=body.name,
@@ -136,7 +176,7 @@ async def create_process(
         seniority=body.seniority,
         budget_max_usd=body.budget_max_usd,
         match_weights_override=body.match_weights_override,
-        recruiter_id=current_user.id,
+        recruiter_id=recruiter_id,
         status=ProcessStatus.DRAFT.value,
     )
     db.add(process)
@@ -150,7 +190,7 @@ async def create_process(
         description=f"Se creó el proceso '{process.name}' para el cargo {process.job_title} en el área {process.area}.",
         category="PROCESS_CREATED",
         type="INFO",
-        user_id=current_user.id,
+        user_id=recruiter_id,
         process_id=process.id,
         link=f"/app/procesos/{process.id}",
     )

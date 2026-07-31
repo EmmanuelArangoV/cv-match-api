@@ -4,7 +4,8 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.deps import RequireAdmin, get_current_user, get_db
+from src.api.deps import RequireAdmin, RequireTALeader, get_current_user, get_db
+from src.domain.shared.exceptions import ForbiddenException
 from src.application.auth.users_use_cases import (
     CreateUserUseCase,
     DeleteUserUseCase,
@@ -72,7 +73,7 @@ class UpdateUserStatusRequest(BaseModel):
 
 @router.get("", response_model=list[UserResponse])
 async def list_users(
-    current_user: User = RequireAdmin,
+    current_user: User = RequireTALeader,
     db: AsyncSession = Depends(get_db),
 ) -> list[UserResponse]:
     repo = UserRepository(db)
@@ -90,9 +91,11 @@ async def get_me(
 @router.post("", status_code=201, response_model=UserResponse)
 async def create_user(
     body: CreateUserRequest,
-    current_user: User = RequireAdmin,
+    current_user: User = RequireTALeader,
     db: AsyncSession = Depends(get_db),
 ) -> UserResponse:
+    if current_user.role == UserRole.TA_LEADER.value and body.role != UserRole.RECRUITER:
+        raise ForbiddenException("Los líderes solo pueden crear cuentas de recruiter")
     repo = UserRepository(db)
     user = await CreateUserUseCase(repo).execute(body.model_dump())
     from src.infrastructure.db.audit import record_audit
@@ -106,10 +109,16 @@ async def create_user(
 async def update_user(
     user_id: uuid.UUID,
     body: UpdateUserRequest,
-    current_user: User = RequireAdmin,
+    current_user: User = RequireTALeader,
     db: AsyncSession = Depends(get_db),
 ) -> UserResponse:
     repo = UserRepository(db)
+    target_user = await repo.find_by_id(user_id)
+    if (
+        current_user.role == UserRole.TA_LEADER.value
+        and (not target_user or target_user.role == UserRole.ADMIN.value or body.role == UserRole.ADMIN)
+    ):
+        raise ForbiddenException("Los líderes no pueden modificar cuentas de administrador")
     update_data = {k: v for k, v in body.model_dump().items() if v is not None}
     user = await UpdateUserUseCase(repo).execute(user_id, update_data)
     from src.infrastructure.db.audit import record_audit
@@ -123,10 +132,15 @@ async def update_user(
 async def update_user_status(
     user_id: uuid.UUID,
     body: UpdateUserStatusRequest,
-    current_user: User = RequireAdmin,
+    current_user: User = RequireTALeader,
     db: AsyncSession = Depends(get_db),
 ) -> UserResponse:
     repo = UserRepository(db)
+    target_user = await repo.find_by_id(user_id)
+    if current_user.role == UserRole.TA_LEADER.value and (
+        not target_user or target_user.role == UserRole.ADMIN.value
+    ):
+        raise ForbiddenException("Los líderes no pueden modificar cuentas de administrador")
     user = await UpdateUserStatusUseCase(repo).execute(user_id, body.status.value)
     from src.infrastructure.db.audit import record_audit
     record_audit(db, current_user.id, "USER_MANAGEMENT", "User", user.id)

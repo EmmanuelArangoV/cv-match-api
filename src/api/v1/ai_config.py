@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import RequireAdmin, get_current_user
 from src.domain.match.value_objects import MatchThresholds
-from src.domain.shared.exceptions import NotFoundException
+from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
 from src.infrastructure.db.database import get_db
 from src.infrastructure.db.models import (
     AIModelConfiguration,
@@ -232,6 +232,16 @@ async def update_global_setting(
     """Upsert: crea la fila si `setting_key` no existe todavía (no hay seed de datos)."""
     if setting_key == "match_thresholds":
         MatchThresholds.from_dict(body.setting_value)  # valida 0 <= low <= medium <= high <= 100
+    if setting_key == "platform_total_budget":
+        amount = body.setting_value.get("amount")
+        if (
+            isinstance(amount, bool)
+            or not isinstance(amount, (int, float))
+            or amount < 0
+        ):
+            raise BusinessRuleException(
+                "El presupuesto total debe ser un número mayor o igual a cero."
+            )
 
     result = await db.execute(
         select(GlobalBusinessSetting).where(GlobalBusinessSetting.setting_key == setting_key)
