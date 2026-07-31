@@ -18,6 +18,7 @@ from src.api.v1 import (
     profiling,
     question_sets,
     reports,
+    search,
     users,
     webhooks,
     system,
@@ -102,6 +103,7 @@ app.include_router(feedback.router, prefix="/api/v1")
 app.include_router(audit.router, prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")
 app.include_router(reports.router, prefix="/api/v1")
+app.include_router(search.router, prefix="/api/v1")
 app.include_router(system.router, prefix="/api/v1")
 
 if not settings.is_production:
