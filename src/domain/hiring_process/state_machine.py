@@ -5,6 +5,7 @@ from src.infrastructure.db.models import ProcessStatus
 _TRANSITIONS: dict[ProcessStatus, set[ProcessStatus]] = {
     ProcessStatus.DRAFT: {
         ProcessStatus.CVS_UPLOADED,
+        ProcessStatus.CLOSED,
     },
     ProcessStatus.CVS_UPLOADED: {
         ProcessStatus.MATCH_PROCESSING,
@@ -13,6 +14,7 @@ _TRANSITIONS: dict[ProcessStatus, set[ProcessStatus]] = {
     },
     ProcessStatus.MATCH_PROCESSING: {
         ProcessStatus.MATCH_DONE,
+        ProcessStatus.CLOSED,
     },
     ProcessStatus.MATCH_DONE: {
         ProcessStatus.PROFILING_CONFIGURED,
@@ -29,6 +31,7 @@ _TRANSITIONS: dict[ProcessStatus, set[ProcessStatus]] = {
     ProcessStatus.PROFILING_ACTIVE: {
         ProcessStatus.PROFILING_COMPLETED,
         ProcessStatus.PROFILING_CONFIGURED,  # se canceló el profiling
+        ProcessStatus.CLOSED,
     },
     ProcessStatus.PROFILING_COMPLETED: {
         ProcessStatus.CLOSED,

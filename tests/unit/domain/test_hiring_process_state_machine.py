@@ -17,6 +17,19 @@ def test_invalid_transition():
     with pytest.raises(BusinessRuleException):
         HiringProcessStateMachine.transition(ProcessStatus(process.status), ProcessStatus.MATCH_DONE)
 
+
+def test_active_operational_states_can_be_closed_manually():
+    for current in (
+        ProcessStatus.DRAFT,
+        ProcessStatus.MATCH_PROCESSING,
+        ProcessStatus.PROFILING_ACTIVE,
+    ):
+        assert (
+            HiringProcessStateMachine.transition(current, ProcessStatus.CLOSED)
+            == ProcessStatus.CLOSED
+        )
+
+
 def test_closed_process_transition():
     process = HiringProcess(status=ProcessStatus.CLOSED.value)
     with pytest.raises(BusinessRuleException):

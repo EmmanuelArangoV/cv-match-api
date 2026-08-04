@@ -37,7 +37,7 @@ def start_profiling_call(self, process_candidate_id: str):
             profiling_run = InitiateProfilingCallUseCase(db).execute(process_candidate_id)
             db.commit()
             return {
-                "status": "CALLING",
+                "status": profiling_run.status,
                 "profiling_run_id": str(profiling_run.id),
                 "twilio_call_sid": profiling_run.twilio_call_sid,
             }
@@ -50,7 +50,9 @@ def start_profiling_call(self, process_candidate_id: str):
             db.rollback()
             logger.error(f"[profiling] error transitorio iniciando llamada: {exc}")
             from src.infrastructure.cache.redis_client import get_global_setting_sync
-            max_retries = int(get_global_setting_sync(db, "max_call_attempts", str(settings.max_call_attempts)))
+            max_retries = int(
+                get_global_setting_sync(db, "max_call_attempts", str(settings.max_call_attempts))
+            )
             raise self.retry(exc=exc, max_retries=max_retries)
 
 
@@ -70,7 +72,9 @@ def retry_or_fail_profiling_call(self, profiling_run_id: str, reason: str):
             db.rollback()
             logger.error(f"[profiling] error transitorio reintentando llamada: {exc}")
             from src.infrastructure.cache.redis_client import get_global_setting_sync
-            max_retries = int(get_global_setting_sync(db, "max_call_attempts", str(settings.max_call_attempts)))
+            max_retries = int(
+                get_global_setting_sync(db, "max_call_attempts", str(settings.max_call_attempts))
+            )
             raise self.retry(exc=exc, max_retries=max_retries)
 
 
@@ -119,7 +123,9 @@ def check_stale_profiling_calls(self):
                 ):
                     continue  # se resolvio entre la lectura y el lock
 
-                RetryOrFailProfilingCallUseCase(db).execute(str(locked.id), "watchdog_timeout")
+                RetryOrFailProfilingCallUseCase(db).execute(
+                    str(locked.id), "watchdog_timeout", allow_retry=False
+                )
                 processed.append(str(locked.id))
 
             db.commit()
@@ -130,7 +136,9 @@ def check_stale_profiling_calls(self):
             db.rollback()
             logger.error(f"[watchdog] error revisando llamadas atascadas: {exc}")
             from src.infrastructure.cache.redis_client import get_global_setting_sync
-            max_retries = int(get_global_setting_sync(db, "max_call_attempts", str(settings.max_call_attempts)))
+            max_retries = int(
+                get_global_setting_sync(db, "max_call_attempts", str(settings.max_call_attempts))
+            )
             raise self.retry(exc=exc, max_retries=max_retries)
 
 
@@ -171,7 +179,9 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
                 get_active_ai_model_sync,
                 get_active_ai_prompt_sync,
             )
-            sys_prompt = get_active_ai_prompt_sync(db, "VOICE_PROFILING", PROFILING_EVALUATION_PROMPT)
+            sys_prompt = get_active_ai_prompt_sync(
+                db, "VOICE_PROFILING", PROFILING_EVALUATION_PROMPT
+            )
             model = get_active_ai_model_sync(db, "VOICE_PROFILING", "OPENAI", "gpt-4o")
 
             prompt = (
@@ -261,16 +271,22 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
             profiling_run.advancement_explanation = advancement.explanation
             profiling_run.call_consent_status = result_data.get("verbal_consent", "ACCEPTED")
 
-            from src.application.notifications.service import create_notification_sync, check_and_notify_budget_sync
+            from src.application.notifications.service import (
+                check_and_notify_budget_sync,
+                create_notification_sync,
+            )
             if pc:
                 create_notification_sync(
                     db,
                     title="Profiling completado",
-                    description=f"Se completó la evaluación de profiling por voz para un candidato en el proceso.",
+                    description=(
+                        "Se completó la evaluación de profiling por voz "
+                        "para un candidato en el proceso."
+                    ),
                     category="PROFILING_COMPLETED",
                     type="SUCCESS",
                     process_id=pc.process_id,
-                    link=f"/app/profiling",
+                    link="/app/profiling",
                 )
                 check_and_notify_budget_sync(db, pc.process_id)
 
@@ -281,5 +297,7 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
             db.rollback()
             logger.error(f"[profiling] error evaluando transcripcion: {exc}")
             from src.infrastructure.cache.redis_client import get_global_setting_sync
-            max_retries = int(get_global_setting_sync(db, "max_call_attempts", str(settings.max_call_attempts)))
+            max_retries = int(
+                get_global_setting_sync(db, "max_call_attempts", str(settings.max_call_attempts))
+            )
             raise self.retry(exc=exc, max_retries=max_retries)

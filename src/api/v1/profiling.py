@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
@@ -8,9 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.api.deps import RequireRecruiter, get_current_user
+from src.application.hiring_process.progress import sync_process_status
 from src.config import settings
 from src.domain.candidate.state_machine import CandidateStateMachine
 from src.domain.hiring_process.rules import HiringProcessRules
+from src.domain.profiling.watchdog import is_run_stale
 from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
 from src.infrastructure.db.database import get_db
 from src.infrastructure.db.models import (
@@ -18,7 +21,10 @@ from src.infrastructure.db.models import (
     HiringProcess,
     ProcessCandidate,
     ProcessStatus,
+    ProfilingAnswer,
+    ProfilingQuestion,
     ProfilingRun,
+    ProfilingRunStatus,
     User,
     UserRole,
     WhatsAppConsentStatus,
@@ -39,6 +45,9 @@ def _candidate_name(run: ProfilingRun) -> str:
 
 
 def _serialize_run(run: ProfilingRun, candidate_name: str) -> dict:
+    started_at = run.started_at or run.created_at
+    elapsed_seconds = max(0, int((datetime.now(UTC) - started_at).total_seconds()))
+
     return {
         "id": str(run.id),
         "process_candidate_id": str(run.process_candidate_id),
@@ -57,6 +66,14 @@ def _serialize_run(run: ProfilingRun, candidate_name: str) -> dict:
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
         "created_at": run.created_at.isoformat(),
         "updated_at": run.updated_at.isoformat(),
+        "elapsed_seconds": elapsed_seconds if run.status in {"CALLING", "ANSWERED"} else None,
+        "is_stale": is_run_stale(
+            run.status,
+            run.started_at,
+            datetime.now(UTC),
+            settings.stale_calling_timeout_seconds,
+            settings.stale_answered_timeout_seconds,
+        ),
     }
 
 
@@ -119,6 +136,7 @@ async def trigger_profiling(
 
         queued.append(pc)
 
+    await sync_process_status(db, process_id)
     await db.commit()
 
     whatsapp_configured = bool(
@@ -199,13 +217,6 @@ async def list_all_profiling_runs(
     }
 
 
-from src.infrastructure.db.models import (
-    ProfilingAnswer,
-    ProfilingQuestion,
-    ProfilingRunStatus,
-)
-
-
 class OverrideProfilingRequest(BaseModel):
     advancement_probability: str
     advancement_explanation: str
@@ -237,7 +248,7 @@ async def _ensure_run_transcript_and_answers(db: AsyncSession, run: ProfilingRun
 
     try:
         conv = await asyncio.to_thread(_fetch_conv)
-    except Exception as exc:
+    except Exception:
         return
 
     turns = []
@@ -405,12 +416,15 @@ async def cancel_profiling_run(
         raise BusinessRuleException("Solo se pueden cancelar llamadas en estado QUEUED")
 
     run.status = ProfilingRunStatus.FAILED.value
+    run.completed_at = datetime.now(UTC)
     pc = run.process_candidate
     if pc:
         pc.status = CandidateStateMachine.transition(
             CandidateStatus(pc.status), CandidateStatus.PROFILING_FAILED
         ).value
 
+    if pc:
+        await sync_process_status(db, pc.process_id)
     await db.commit()
     return {"message": "Llamada cancelada correctamente"}
 
@@ -433,10 +447,7 @@ async def override_profiling_run(
     if not run:
         raise NotFoundException("ProfilingRun no encontrado")
 
-    if (
-        run.status != ProfilingRunStatus.EVALUATED.value
-        and run.status != ProfilingRunStatus.COMPLETED.value
-    ):
+    if run.status != ProfilingRunStatus.COMPLETED.value:
         raise BusinessRuleException("Solo se puede sobrescribir una llamada evaluada o completada")
 
     run.advancement_probability = body.advancement_probability

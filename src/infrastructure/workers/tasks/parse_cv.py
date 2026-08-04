@@ -18,6 +18,7 @@ from openai import OpenAI
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from src.application.hiring_process.progress import sync_process_status_sync
 from src.config import settings
 from src.infrastructure.ai.prompts import CV_EXTRACTION_PROMPT
 from src.infrastructure.cv.pdf_renderer import render_normalized_cv
@@ -206,6 +207,8 @@ def parse_cv(
             # Marcar en proceso
             pc.status = CandidateStatus.CV_PROCESSING.value
             db.commit()
+            sync_process_status_sync(db, proc_uuid)
+            db.commit()
 
             # Descargar el archivo de R2
             file_bytes = download_file_sync(candidate.cv_file_url)
@@ -280,6 +283,7 @@ def parse_cv(
 
             # Actualizar estado del proceso-candidato
             pc.status = CandidateStatus.MATCH_PENDING.value
+            sync_process_status_sync(db, proc_uuid)
 
             # Registrar costo
             estimated_cost = (tokens_in * _INPUT_COST) + (tokens_out * _OUTPUT_COST)
@@ -295,24 +299,9 @@ def parse_cv(
             db.add(cost_log)
             db.commit()
 
-            # Disparar automáticamente la tarea de match de forma SÍNCRONA
-            from src.infrastructure.workers.tasks.run_match import execute_match, run_match
-
-            final_status = "MATCH_PENDING"
-            try:
-                match_res = execute_match(process_candidate_id, process_id)
-                final_status = match_res.get("status", "MATCH_PENDING")
-            except Exception:
-                # Si falla sincrónicamente, encolar para reintentos normales de match
-                run_match.delay(
-                    process_candidate_id=process_candidate_id,
-                    process_id=process_id,
-                )
-                final_status = "MATCH_PENDING (queued)"
-
             return {
                 "candidate_id": candidate_id,
-                "status": final_status,
+                "status": CandidateStatus.MATCH_PENDING.value,
                 "tokens_in": tokens_in,
                 "tokens_out": tokens_out,
                 "estimated_cost_usd": round(estimated_cost, 6),
@@ -324,6 +313,7 @@ def parse_cv(
                 pc = db.get(ProcessCandidate, pc_uuid)
                 if pc:
                     pc.status = CandidateStatus.CV_ERROR.value
+                    sync_process_status_sync(db, proc_uuid)
                     db.commit()
             except Exception:
                 pass

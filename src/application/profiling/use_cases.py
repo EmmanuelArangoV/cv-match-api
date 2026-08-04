@@ -20,7 +20,9 @@ from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from twilio.base.exceptions import TwilioRestException
 
+from src.application.hiring_process.progress import sync_process_status_sync
 from src.config import settings
 from src.domain.candidate.state_machine import CandidateStateMachine
 from src.domain.hiring_process.rules import HiringProcessRules
@@ -37,6 +39,27 @@ from src.infrastructure.db.models import (
 from src.infrastructure.voice.twilio_client import create_outbound_call
 
 _ACTIVE_CALL_STATUSES = (ProfilingRunStatus.CALLING.value, ProfilingRunStatus.ANSWERED.value)
+
+
+def _is_twilio_auth_error(exc: TwilioRestException) -> bool:
+    return getattr(exc, "status", None) == 401 or getattr(exc, "code", None) == 20003
+
+
+def _mark_candidate_profiling_failed(db: Session, pc: ProcessCandidate | None) -> None:
+    if not pc or pc.status in {
+        CandidateStatus.PROFILING_FAILED.value,
+        CandidateStatus.PROFILING_COMPLETED.value,
+        CandidateStatus.DISCARDED.value,
+    }:
+        return
+    try:
+        pc.status = CandidateStateMachine.transition(
+            CandidateStatus(pc.status), CandidateStatus.PROFILING_FAILED
+        ).value
+    except BusinessRuleException:
+        # Un run stale no debe bloquearse porque el candidato ya avanzó por otra
+        # ruta (por ejemplo, un webhook tardío o una reparación anterior).
+        return
 
 
 class InitiateProfilingCallUseCase:
@@ -79,7 +102,7 @@ class InitiateProfilingCallUseCase:
 
         pc.status = CandidateStateMachine.transition(
             CandidateStatus(pc.status), CandidateStatus.PROFILING_CALLING
-        )
+        ).value
 
         profiling_run = ProfilingRun(
             process_candidate_id=pc.id,
@@ -91,8 +114,19 @@ class InitiateProfilingCallUseCase:
         self.db.add(profiling_run)
         self.db.flush()
 
-        call_sid = create_outbound_call(candidate.phone, str(profiling_run.id))
+        try:
+            call_sid = create_outbound_call(candidate.phone, str(profiling_run.id))
+        except TwilioRestException as exc:
+            if not _is_twilio_auth_error(exc):
+                raise
+            profiling_run.status = ProfilingRunStatus.FAILED.value
+            profiling_run.completed_at = datetime.now(UTC)
+            profiling_run.twilio_status_detail = "twilio_auth_401"
+            _mark_candidate_profiling_failed(self.db, pc)
+            sync_process_status_sync(self.db, process.id)
+            return profiling_run
         profiling_run.twilio_call_sid = call_sid
+        sync_process_status_sync(self.db, process.id)
 
         return profiling_run
 
@@ -108,13 +142,26 @@ class RetryOrFailProfilingCallUseCase:
     def __init__(self, db: Session):
         self.db = db
 
-    def execute(self, profiling_run_id: str, reason: str) -> ProfilingRun:
+    def execute(
+        self,
+        profiling_run_id: str,
+        reason: str,
+        allow_retry: bool = True,
+    ) -> ProfilingRun:
         run = self.db.get(ProfilingRun, uuid.UUID(profiling_run_id))
         if not run:
             raise NotFoundException("ProfilingRun", profiling_run_id)
 
         pc = self.db.get(ProcessCandidate, run.process_candidate_id)
         run.twilio_status_detail = reason[:30]
+
+        if not allow_retry:
+            run.status = ProfilingRunStatus.FAILED.value
+            run.completed_at = datetime.now(UTC)
+            _mark_candidate_profiling_failed(self.db, pc)
+            if pc:
+                sync_process_status_sync(self.db, pc.process_id)
+            return run
 
         if run.call_attempts < settings.max_call_attempts:
             run.call_attempts += 1
@@ -125,12 +172,22 @@ class RetryOrFailProfilingCallUseCase:
                     f"ProfilingRun {profiling_run_id}: candidato sin telefono, no se puede "
                     "reintentar."
                 )
-            run.twilio_call_sid = create_outbound_call(candidate.phone, str(run.id))
+            try:
+                run.twilio_call_sid = create_outbound_call(candidate.phone, str(run.id))
+            except TwilioRestException as exc:
+                if not _is_twilio_auth_error(exc):
+                    raise
+                run.status = ProfilingRunStatus.FAILED.value
+                run.completed_at = datetime.now(UTC)
+                run.twilio_status_detail = "twilio_auth_401"
+                _mark_candidate_profiling_failed(self.db, pc)
+            if pc:
+                sync_process_status_sync(self.db, pc.process_id)
         else:
             run.status = ProfilingRunStatus.FAILED.value
+            run.completed_at = datetime.now(UTC)
+            _mark_candidate_profiling_failed(self.db, pc)
             if pc:
-                pc.status = CandidateStateMachine.transition(
-                    CandidateStatus(pc.status), CandidateStatus.PROFILING_FAILED
-                )
+                sync_process_status_sync(self.db, pc.process_id)
 
         return run

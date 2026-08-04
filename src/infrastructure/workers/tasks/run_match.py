@@ -13,6 +13,7 @@ from openai import OpenAI
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import selectinload, sessionmaker
 
+from src.application.hiring_process.progress import sync_process_status_sync
 from src.config import settings
 from src.domain.match.value_objects import MatchThresholds, MatchWeights
 from src.infrastructure.ai.prompts import MATCH_SYSTEM_PROMPT, build_match_messages
@@ -75,7 +76,6 @@ def execute_match(
         MatchCategory,
         OperationType,
         ProcessCandidate,
-        ProcessStatus,
     )
 
     pc_uuid = uuid.UUID(process_candidate_id)
@@ -92,7 +92,7 @@ def execute_match(
         if not pc:
             return {"error": "ProcessCandidate not found"}
 
-        # Guard against double-dispatch (auto from parse_cv + manual UI trigger)
+        # Guard against double-dispatch (por doble click o reintento del endpoint manual)
         if pc.status not in (CandidateStatus.MATCH_PENDING.value,):
             return {"skipped": f"Candidate already in status {pc.status}"}
 
@@ -100,12 +100,15 @@ def execute_match(
         pc.status = CandidateStatus.MATCH_PROCESSING.value
         db.flush()
         db.commit()
+        sync_process_status_sync(db, proc_uuid)
+        db.commit()
 
         candidate = pc.candidate
 
         # RB-002: CV debe estar procesado
         if not candidate.normalized_cv:
             pc.status = CandidateStatus.MATCH_PENDING.value
+            sync_process_status_sync(db, proc_uuid)
             db.commit()
             return {"error": "CV not yet processed — normalized_cv is empty"}
 
@@ -121,19 +124,11 @@ def execute_match(
             db.commit()
             return {"error": "Process not found"}
 
-        # Cambiar a MATCH_PROCESSING al iniciar el match
-        if process.status in (
-            ProcessStatus.CVS_UPLOADED.value,
-            ProcessStatus.MATCH_DONE.value,
-            ProcessStatus.PROFILING_CONFIGURED.value,
-        ):
-            process.status = ProcessStatus.MATCH_PROCESSING.value
-            db.flush()
-
         # RB-001: debe existir una JD
         jds = sorted(process.job_descriptions, key=lambda j: j.version, reverse=True)
         if not jds:
             pc.status = CandidateStatus.MATCH_PENDING.value
+            sync_process_status_sync(db, proc_uuid)
             db.commit()
             return {"error": "RB-001: No active Job Description for this process"}
 
@@ -196,15 +191,24 @@ def execute_match(
         db.add(cost_log)
         db.flush()
 
-        # Transición MATCH_DONE si todos los candidatos del proceso ya fueron matcheados
+        # La etapa agregada se deriva después de guardar el resultado, sin que
+        # cada worker mantenga su propia versión del estado del proceso.
         remaining = db.execute(
             select(func.count(ProcessCandidate.id))
             .where(ProcessCandidate.process_id == proc_uuid)
-            .where(ProcessCandidate.status == CandidateStatus.MATCH_PENDING.value)
+            .where(
+                ProcessCandidate.status.in_(
+                    {
+                        CandidateStatus.LOADED.value,
+                        CandidateStatus.CV_PROCESSING.value,
+                        CandidateStatus.MATCH_PENDING.value,
+                        CandidateStatus.MATCH_PROCESSING.value,
+                    }
+                )
+            )
         ).scalar()
 
         if remaining == 0:
-            process.status = ProcessStatus.MATCH_DONE.value
             from src.application.notifications.service import create_notification_sync
             create_notification_sync(
                 db,
@@ -216,6 +220,8 @@ def execute_match(
                 user_id=process.recruiter_id,
                 link=f"/app/procesos/{proc_uuid}",
             )
+
+        sync_process_status_sync(db, proc_uuid)
 
         from src.application.notifications.service import check_and_notify_budget_sync
         check_and_notify_budget_sync(db, proc_uuid)
@@ -256,6 +262,7 @@ def run_match(
                 pc = db.get(ProcessCandidate, pc_uuid)
                 if pc:
                     pc.status = CandidateStatus.MATCH_PENDING.value
+                    sync_process_status_sync(db, uuid.UUID(process_id))
                     db.commit()
             except Exception:
                 pass

@@ -17,6 +17,9 @@ from src.api.deps import (
     get_current_user,
 )
 from src.application.hiring_process.jd_parse_usecase import ParseJobDescriptionUseCase
+from src.application.hiring_process.progress import (
+    sync_process_status,
+)
 from src.domain.hiring_process.rules import HiringProcessRules
 from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
 from src.infrastructure.db.database import get_db
@@ -227,6 +230,13 @@ async def list_processes(
     result = await db.execute(query)
     processes = list(result.scalars().all())
 
+    # El estado listado es una proyección del pipeline real. Se sincroniza aquí para
+    # reparar procesos que no hayan recibido un evento desde una ejecución antigua.
+    progress_by_process: dict[uuid.UUID, dict] = {}
+    for process in processes:
+        progress_by_process[process.id] = (await sync_process_status(db, process.id)).as_dict()
+    await db.commit()
+
     return {
         "total": len(processes),
         "processes": [
@@ -241,6 +251,7 @@ async def list_processes(
                 "recruiter_id": str(p.recruiter_id),
                 "recruiter_name": f"{p.recruiter.name} {p.recruiter.last_name}",
                 "created_at": p.created_at.isoformat(),
+                "progress": progress_by_process[p.id],
             }
             for p in processes
         ],
@@ -265,6 +276,9 @@ async def get_process(
 
     if not process:
         raise NotFoundException("Proceso no encontrado")
+
+    await sync_process_status(db, process_id)
+    await db.commit()
 
     jds = sorted(process.job_descriptions, key=lambda j: j.version, reverse=True)
     active_jd = jds[0] if jds else None
@@ -333,6 +347,7 @@ async def update_process_question_set(
 
     cloned = await _clone_question_set(question_set, db)
     process.question_set_id = cloned.id
+    await sync_process_status(db, process_id)
     await db.commit()
 
     return {
@@ -599,6 +614,14 @@ async def update_process_status(
     if not process:
         raise NotFoundException("Proceso no encontrado")
 
+    # Los estados operativos ya no se cambian manualmente: se derivan del pipeline.
+    # CLOSED/ARCHIVED siguen siendo acciones administrativas explícitas.
+    if body.status not in {ProcessStatus.CLOSED, ProcessStatus.ARCHIVED}:
+        raise BusinessRuleException(
+            "Los estados operativos del proceso se calculan automáticamente; "
+            "solo CLOSED y ARCHIVED pueden cambiarse manualmente."
+        )
+
     new_status = HiringProcessStateMachine.transition(ProcessStatus(process.status), body.status)
     process.status = new_status.value
     await db.commit()
@@ -608,6 +631,21 @@ async def update_process_status(
         "process_id": str(process.id),
         "status": process.status,
     }
+
+
+@router.get("/{process_id}/progress")
+async def get_process_progress_endpoint(
+    process_id: uuid.UUID,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Devuelve la única proyección de etapa, contadores y llamadas activas."""
+    try:
+        progress = await sync_process_status(db, process_id)
+    except LookupError as exc:
+        raise NotFoundException(str(exc)) from exc
+    await db.commit()
+    return progress.as_dict()
 
 
 @router.get("/{process_id}/metrics", response_model=dict)

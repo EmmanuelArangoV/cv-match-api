@@ -49,12 +49,17 @@ _CONTENT_TYPES: dict[str, str] = {
 }
 
 
+def _status_value(status: CandidateStatus | str) -> str:
+    return status.value if isinstance(status, CandidateStatus) else str(status)
+
+
 @dataclass
 class UploadResult:
     candidate_id: uuid.UUID
     process_candidate_id: uuid.UUID
     filename: str
-    task_id: str
+    task_id: str | None
+    status: str
 
 
 class UploadCVsUseCase:
@@ -140,41 +145,40 @@ class UploadCVsUseCase:
                             candidate_id=existing_candidate.id,
                             process_candidate_id=existing_pc.id,
                             filename=filename,
-                            task_id="already_exists",
+                            task_id=None,
+                            status=_status_value(existing_pc.status),
                         )
                     )
                     continue
 
                 # Crear nuevo ProcessCandidate vinculado al candidato existente
+                status = (
+                    CandidateStatus.MATCH_PENDING.value
+                    if (
+                        existing_candidate.normalized_cv is not None
+                        or existing_candidate.normalized_cv_url is not None
+                    )
+                    else CandidateStatus.LOADED.value
+                )
                 pc = ProcessCandidate(
                     process_id=process_id,
                     candidate_id=existing_candidate.id,
-                    status=CandidateStatus.MATCH_PENDING.value,
+                    status=status,
                     whatsapp_consent_status=WhatsAppConsentStatus.PENDING.value,
                 )
                 await self._candidate_repo.save_process_candidate(pc)
 
-                if process.status == ProcessStatus.DRAFT.value:
-                    process.status = ProcessStatus.CVS_UPLOADED.value
-                # Commit antes de encolar: get_db() solo comitea al final del
-                # request, y el worker de Celery lee con una conexion distinta
-                # que no ve filas todavia sin comitear (causaba "not found").
+                # Confirmar la relación antes de continuar con el lote evita
+                # dejar datos sin persistir si el upload de otro archivo falla.
                 await self._db.commit()
-
-                # Ejecutar match inmediatamente (ya tenemos la normalización)
-                from src.infrastructure.workers.tasks.run_match import run_match
-
-                task = run_match.delay(
-                    process_candidate_id=str(pc.id),
-                    process_id=str(process_id),
-                )
 
                 results.append(
                     UploadResult(
                         candidate_id=existing_candidate.id,
                         process_candidate_id=pc.id,
                         filename=filename,
-                        task_id=task.id,
+                        task_id=None,
+                        status=status,
                     )
                 )
             else:
@@ -204,26 +208,17 @@ class UploadCVsUseCase:
                 )
                 await self._candidate_repo.save_process_candidate(pc)
 
-                if process.status == ProcessStatus.DRAFT.value:
-                    process.status = ProcessStatus.CVS_UPLOADED.value
-
-                # Commit antes de encolar: get_db() solo comitea al final del
-                # request, y el worker de Celery lee con una conexion distinta
-                # que no ve filas todavia sin comitear (causaba "not found").
+                # El upload solo persiste el CV. El caso de uso de análisis hará
+                # el claim y encolará parse_cv cuando el recruiter lo solicite.
                 await self._db.commit()
-
-                task = parse_cv.delay(
-                    str(candidate_id),
-                    str(pc.id),
-                    str(process_id),
-                )
 
                 results.append(
                     UploadResult(
                         candidate_id=candidate_id,
                         process_candidate_id=pc.id,
                         filename=filename,
-                        task_id=task.id,
+                        task_id=None,
+                        status=CandidateStatus.LOADED.value,
                     )
                 )
 
@@ -231,3 +226,78 @@ class UploadCVsUseCase:
             await asyncio.gather(*upload_tasks)
 
         return results
+
+
+@dataclass
+class AnalyzeCVResult:
+    process_candidate_id: uuid.UUID
+    candidate_id: uuid.UUID
+    previous_status: str
+    task_id: str | None = None
+    error: str | None = None
+
+
+class AnalyzeCVsUseCase:
+    """Reclama y encola el análisis de CVs de forma idempotente."""
+
+    _ANALYZABLE_STATUSES = {
+        CandidateStatus.LOADED.value,
+        CandidateStatus.CV_ERROR.value,
+    }
+
+    def __init__(self, db: AsyncSession) -> None:
+        self._db = db
+
+    async def execute(self, process_id: uuid.UUID) -> list[AnalyzeCVResult]:
+        from sqlalchemy import select
+
+        from src.domain.candidate.state_machine import CandidateStateMachine
+
+        result = await self._db.execute(
+            select(ProcessCandidate)
+            .where(
+                ProcessCandidate.process_id == process_id,
+                ProcessCandidate.status.in_(self._ANALYZABLE_STATUSES),
+            )
+            .with_for_update(skip_locked=True)
+        )
+        candidates = list(result.scalars().all())
+        claimed: list[AnalyzeCVResult] = []
+
+        for pc in candidates:
+            previous_status = _status_value(pc.status)
+            CandidateStateMachine.transition(
+                CandidateStatus(previous_status), CandidateStatus.CV_PROCESSING
+            )
+            pc.status = CandidateStatus.CV_PROCESSING.value
+            claimed.append(
+                AnalyzeCVResult(
+                    process_candidate_id=pc.id,
+                    candidate_id=pc.candidate_id,
+                    previous_status=previous_status,
+                )
+            )
+
+        # El claim debe ser visible antes de publicar la tarea. Así una segunda
+        # solicitud no puede volver a reclamar los mismos candidatos.
+        await self._db.commit()
+
+        for item in claimed:
+            try:
+                task = parse_cv.delay(
+                    str(item.candidate_id),
+                    str(item.process_candidate_id),
+                    str(process_id),
+                )
+                item.task_id = task.id
+            except Exception as exc:
+                # La publicación falló después del commit: devolver el candidato
+                # a su estado anterior para permitir un nuevo intento manual.
+                await self._db.rollback()
+                failed_pc = await self._db.get(ProcessCandidate, item.process_candidate_id)
+                if failed_pc and failed_pc.status == CandidateStatus.CV_PROCESSING.value:
+                    failed_pc.status = item.previous_status
+                    await self._db.commit()
+                item.error = str(exc)
+
+        return claimed

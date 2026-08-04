@@ -51,4 +51,49 @@ async def test_cv_deduplication():
             )
             
             assert len(results) == 1
-            assert results[0].task_id == "already_exists"
+            assert results[0].task_id is None
+
+
+@pytest.mark.asyncio
+async def test_new_cv_upload_only_persists_and_does_not_enqueue_parse():
+    mock_db = AsyncMock()
+    mock_process = HiringProcess(
+        id=uuid.uuid4(), status=ProcessStatus.CVS_UPLOADED.value, budget_max_usd=100.0
+    )
+
+    with patch("src.application.cv.use_cases.ProcessRepository") as mock_process_repo, \
+        patch("src.application.cv.use_cases.CandidateRepository") as mock_cand_repo, \
+        patch(
+            "src.application.cv.use_cases.r2_client.upload_file", new_callable=AsyncMock
+        ) as upload:
+        mock_process_repo.return_value.find_by_id = AsyncMock(return_value=mock_process)
+        candidate_repo = mock_cand_repo.return_value
+        candidate_repo.count_by_process = AsyncMock(return_value=0)
+        candidate_repo.find_by_cv_file_hash = AsyncMock(return_value=None)
+
+        async def save_process_candidate(pc):
+            pc.id = uuid.uuid4()
+            return pc
+
+        candidate_repo.save_process_candidate = AsyncMock(side_effect=save_process_candidate)
+        candidate_repo.save_candidate = AsyncMock()
+
+        result_mock = MagicMock()
+        result_mock.scalar.return_value = 0.0
+        mock_db.execute = AsyncMock(return_value=result_mock)
+
+        mock_file = AsyncMock()
+        mock_file.filename = "new.pdf"
+        mock_file.read.return_value = b"new content"
+
+        with patch("src.application.cv.use_cases.parse_cv") as parse_cv:
+            results = await UploadCVsUseCase(mock_db).execute(
+                process_id=mock_process.id,
+                files=[mock_file],
+                uploader_id=uuid.uuid4(),
+            )
+
+        assert results[0].task_id is None
+        assert results[0].status == "LOADED"
+        parse_cv.delay.assert_not_called()
+        upload.assert_awaited_once()

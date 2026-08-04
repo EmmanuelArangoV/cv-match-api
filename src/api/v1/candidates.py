@@ -8,10 +8,19 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import RequireRecruiter, RequireRecruiterWithQuery, get_current_user
-from src.application.cv.use_cases import UploadCVsUseCase
+from src.application.cv.use_cases import AnalyzeCVsUseCase, UploadCVsUseCase
+from src.application.hiring_process.progress import sync_process_status
+from src.domain.hiring_process.rules import HiringProcessRules
 from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
 from src.infrastructure.db.database import get_db
-from src.infrastructure.db.models import CostLog, User, WhatsAppConsentStatus
+from src.infrastructure.db.models import (
+    CostLog,
+    HiringProcess,
+    ProcessCandidate,
+    ProcessStatus,
+    User,
+    WhatsAppConsentStatus,
+)
 from src.infrastructure.db.repositories.candidate_repository import CandidateRepository
 from src.infrastructure.storage import r2_client
 
@@ -37,20 +46,91 @@ async def upload_cvs(
         files=files,
         uploader_id=current_user.id,
     )
+    await sync_process_status(db, process_id)
     await db.commit()
 
     return {
         "uploaded": len(results),
+        "message": "CVs cargados; listos para analizar",
         "candidates": [
             {
                 "candidate_id": str(r.candidate_id),
                 "process_candidate_id": str(r.process_candidate_id),
                 "filename": r.filename,
                 "task_id": r.task_id,
-                "status": "LOADED",
+                "status": r.status,
             }
             for r in results
         ],
+    }
+
+
+@router.post("/{process_id}/candidates/analyze")
+async def analyze_cvs(
+    process_id: uuid.UUID,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Encola extracción y normalización de CVs pendientes, sin ejecutar matching."""
+    process = await db.get(HiringProcess, process_id)
+    if not process:
+        raise NotFoundException("Proceso no encontrado")
+
+    HiringProcessRules.require_active_process(ProcessStatus(process.status))
+
+    results = await AnalyzeCVsUseCase(db).execute(process_id)
+    queued = [result for result in results if result.task_id]
+    failed_publications = {
+        result.process_candidate_id: result
+        for result in results
+        if result.error is not None
+    }
+    queued_ids = {result.process_candidate_id for result in queued}
+
+    # Leer los estados posteriores al claim permite informar también los
+    # candidatos omitidos (procesándose, ya procesados o matcheados).
+    candidates_result = await db.execute(
+        select(ProcessCandidate).where(ProcessCandidate.process_id == process_id)
+    )
+    all_candidates = list(candidates_result.scalars().all())
+    skipped = []
+    for pc in all_candidates:
+        if pc.id in queued_ids:
+            continue
+
+        failed = failed_publications.get(pc.id)
+        reason = (
+            "No se pudo publicar la tarea; el candidato volvió a su estado anterior"
+            if failed
+            else "El candidato no está pendiente de análisis"
+        )
+        skipped.append(
+            {
+                "process_candidate_id": str(pc.id),
+                "status": pc.status,
+                "reason": reason,
+            }
+        )
+
+    await sync_process_status(db, process_id)
+    await db.commit()
+
+    return {
+        "process_id": str(process_id),
+        "queued": len(queued),
+        "tasks": [
+            {
+                "process_candidate_id": str(result.process_candidate_id),
+                "task_id": result.task_id,
+            }
+            for result in queued
+        ],
+        "skipped": skipped,
+        "message": (
+            "Análisis de CVs iniciado"
+            if queued
+            else "No hay CVs pendientes de análisis"
+        ),
     }
 
 
@@ -358,4 +438,3 @@ async def delete_candidate(
     await db.commit()
 
     return {"status": "deleted", "process_candidate_id": str(process_candidate_id)}
-

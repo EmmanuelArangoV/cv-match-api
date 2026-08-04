@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.application.candidate.whatsapp_message_usecase import ProcessWhatsAppMessageUseCase
+from src.application.hiring_process.progress import sync_process_status
 from src.application.profiling.voice_config_resolver import resolve_voice_config
 from src.config import settings
 from src.domain.candidate.state_machine import CandidateStateMachine
@@ -226,6 +227,20 @@ async def twilio_twiml_webhook(
         logger.error(f"[twilio][twiml] ProfilingRun {run_id} no encontrado")
         return Response(content=_TWIML_HANGUP, media_type="application/xml")
 
+    if profiling_run.status in {
+        ProfilingRunStatus.FAILED.value,
+        ProfilingRunStatus.CANCELLED.value,
+        ProfilingRunStatus.COMPLETED.value,
+        ProfilingRunStatus.NO_ANSWER.value,
+        ProfilingRunStatus.VOICEMAIL_DETECTED.value,
+    }:
+        logger.warning(
+            "[twilio][twiml] callback tardio ignorado para run terminal %s (%s)",
+            run_id,
+            profiling_run.status,
+        )
+        return Response(content=_TWIML_HANGUP, media_type="application/xml")
+
     if answered_by in _MACHINE_ANSWERED_BY:
         profiling_run.status = ProfilingRunStatus.VOICEMAIL_DETECTED.value
         profiling_run.amd_result = str(answered_by or "machine")
@@ -417,6 +432,18 @@ async def elevenlabs_post_call_webhook(
 
     if profiling_run.status == ProfilingRunStatus.COMPLETED.value:
         return {"status": "ok", "idempotent": True}
+    if profiling_run.status in {
+        ProfilingRunStatus.FAILED.value,
+        ProfilingRunStatus.CANCELLED.value,
+        ProfilingRunStatus.NO_ANSWER.value,
+        ProfilingRunStatus.VOICEMAIL_DETECTED.value,
+    }:
+        logger.warning(
+            "[elevenlabs][post-call] callback tardio ignorado para run terminal %s (%s)",
+            profiling_run.id,
+            profiling_run.status,
+        )
+        return {"status": "ignored", "reason": "run_terminal"}
 
     analysis = data.get("analysis", {}) or {}
     metadata = data.get("metadata", {}) or {}
@@ -474,6 +501,8 @@ async def elevenlabs_post_call_webhook(
         )
     )
 
+    if pc:
+        await sync_process_status(db, pc.process_id)
     await db.commit()
 
     evaluate_profiling_transcription.delay(str(profiling_run.id), transcript_text)

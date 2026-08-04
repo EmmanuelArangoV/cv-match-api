@@ -28,7 +28,7 @@ Este backend sigue una arquitectura por capas (`domain` / `application` / `infra
 |---|---|---|
 | **0 — Fundaciones** | ✅ Completa | Auth (JWT + refresh tokens), CRUD de procesos, modelos de BD, migraciones Alembic |
 | **1 — Ingesta y parseo de CVs** | ✅ Completa | Upload multi-formato (PDF/DOCX/imágenes), extracción con GPT-4o vision, normalización a PDF (`pdf_renderer.py`), storage en R2 |
-| **2 — Matching por IA** | ✅ Completa | Scoring contra JD, categorización HIGH/MEDIUM/LOW, `CostLog` por operación, encadenado automático parse → match |
+| **2 — Matching por IA** | ✅ Completa | Scoring contra JD, categorización HIGH/MEDIUM/LOW y `CostLog` por operación; el recruiter inicia el análisis de CV y el matching como acciones separadas |
 | **3 — Consentimiento por WhatsApp** | 🔶 En curso | Webhook de Meta, agente conversacional GPT-4o, botones de plantilla, envío individual/masivo desde el frontend. **Bloqueado parcialmente**: la plantilla real `autorizacion_llamada_ia_v2` está pendiente de aprobación en Meta; hay un fallback temporal (`WHATSAPP_TEMPLATE_FALLBACK_ENABLED`) que envía la plantilla de muestra `hello_world` mientras tanto |
 | **4 — Profiling por voz** | ⬜ No iniciada | Los modelos de datos ya existen (`ProfilingRun`, `ProfilingAnswer`, `QuestionSet`, `ProfilingQuestion`) y el CRUD de question sets funciona, pero no hay integración real con ElevenLabs ni lógica de evaluación de respuestas. `application/profiling/` está vacío |
 | **5 — Settings / Métricas reales** | ⬜ No iniciada | El frontend ya tiene páginas de UI completas para esto, pero el backend no expone esos endpoints todavía (`settingsApi` y `metricsApi.getDashboard` en el frontend son 100% mock) |
@@ -178,7 +178,7 @@ cv-match-api/
 │       └── workers/
 │           ├── celery_app.py               # Config de Celery (broker/backend Redis, TZ Bogotá)
 │           └── tasks/
-│               ├── parse_cv.py             # Extrae perfil con GPT-4o vision → dispara match + WhatsApp
+│               ├── parse_cv.py             # Extrae perfil con GPT-4o vision y normaliza el CV
 │               ├── run_match.py            # Calcula score/categoría contra la JD
 │               └── whatsapp.py             # Envía la plantilla de consentimiento
 ├── alembic/
@@ -205,14 +205,15 @@ cv-match-api/
 | Crear proceso de contratación | `POST /api/v1/processes` | [`src/api/v1/processes.py`](src/api/v1/processes.py) |
 | Subir Job Description (texto o archivo) | `POST /api/v1/processes/{id}/job-description[/upload]` | [`src/api/v1/processes.py`](src/api/v1/processes.py) |
 | Subir CVs (multi-formato) | `POST /api/v1/processes/{id}/candidates/upload` | [`src/application/cv/use_cases.py`](src/application/cv/use_cases.py) |
-| Extracción de perfil con IA | (worker, no HTTP) | [`src/infrastructure/workers/tasks/parse_cv.py`](src/infrastructure/workers/tasks/parse_cv.py) |
+| Analizar CVs pendientes | `POST /api/v1/processes/{id}/candidates/analyze` | [`src/api/v1/candidates.py`](src/api/v1/candidates.py) |
+| Extracción de perfil con IA | (worker, encolado por `candidates/analyze`) | [`src/infrastructure/workers/tasks/parse_cv.py`](src/infrastructure/workers/tasks/parse_cv.py) |
 | Normalización de CV a PDF | (dentro de `parse_cv`) | [`src/infrastructure/cv/pdf_renderer.py`](src/infrastructure/cv/pdf_renderer.py) |
 | Matching contra la JD | `POST /api/v1/processes/{id}/match` (dispara workers) | [`src/api/v1/match.py`](src/api/v1/match.py), [`src/infrastructure/workers/tasks/run_match.py`](src/infrastructure/workers/tasks/run_match.py) |
 | Listado/ranking de candidatos | `GET /api/v1/processes/{id}/candidates` | [`src/api/v1/candidates.py`](src/api/v1/candidates.py) |
 | Override manual de match/notas | `PATCH /api/v1/processes/{id}/candidates/{pc_id}/override` | [`src/api/v1/candidates.py`](src/api/v1/candidates.py) |
 | Descarga de CV original/normalizado | `GET .../cv/file`, `GET .../cv-normalized/file` | [`src/api/v1/candidates.py`](src/api/v1/candidates.py), [`src/infrastructure/storage/r2_client.py`](src/infrastructure/storage/r2_client.py) |
 | Envío de consentimiento por WhatsApp (manual/individual) | `POST .../candidates/{pc_id}/whatsapp/send` | [`src/api/v1/candidates.py`](src/api/v1/candidates.py) |
-| Envío automático tras matching | (dentro de `parse_cv`, condicional a credenciales) | [`src/infrastructure/workers/tasks/parse_cv.py`](src/infrastructure/workers/tasks/parse_cv.py) |
+| Envío de consentimiento por WhatsApp | (acción manual) | [`src/api/v1/candidates.py`](src/api/v1/candidates.py) |
 | Plantilla de WhatsApp (con fallback) | (worker) | [`src/infrastructure/workers/tasks/whatsapp.py`](src/infrastructure/workers/tasks/whatsapp.py), [`src/infrastructure/messaging/whatsapp_client.py`](src/infrastructure/messaging/whatsapp_client.py) |
 | Webhook de Meta (verify + mensajes entrantes) | `GET/POST /api/v1/webhooks/whatsapp` | [`src/api/v1/webhooks.py`](src/api/v1/webhooks.py) |
 | Agente de IA que interpreta respuestas | (usado por el webhook) | [`src/application/candidate/whatsapp_message_usecase.py`](src/application/candidate/whatsapp_message_usecase.py) |
@@ -248,7 +249,8 @@ Todos los endpoints están bajo el prefijo `/api/v1`. Autenticación: header `Au
 ### Candidates (`candidates.py`)
 | Método | Ruta | Descripción | Rol |
 |---|---|---|---|
-| POST | `/processes/{id}/candidates/upload` | Sube CVs (PDF/DOCX/JPG/PNG/WEBP), crea `Candidate`+`ProcessCandidate`, encola `parse_cv` | RECRUITER+ |
+| POST | `/processes/{id}/candidates/upload` | Sube CVs y crea `Candidate`+`ProcessCandidate` en `LOADED` o `MATCH_PENDING`; no inicia IA | RECRUITER+ |
+| POST | `/processes/{id}/candidates/analyze` | Encola `parse_cv` para candidatos `LOADED`/`CV_ERROR`; devuelve `tasks` y `skipped` | RECRUITER+ |
 | GET | `/processes/{id}/candidates` | Lista candidatos con rank, match, whatsapp_consent | autenticado |
 | GET | `/processes/{id}/candidates/{pc_id}` | Detalle completo de un candidato | autenticado |
 | PATCH | `/processes/{id}/candidates/{pc_id}/override` | Notas / override manual del % de match | RECRUITER+ |
@@ -513,7 +515,7 @@ ARCHIVED → (terminal)
 - **Clean Architecture por capas, pero con `application/` parcialmente vacío.** Los casos de uso de `processes`, `candidates` y `match` viven hoy directamente en los routers de `api/v1/`, no en `application/hiring_process|match|profiling/` (que existen como carpetas vacías). Solo `auth`, `cv` (upload) y `candidate` (WhatsApp) tienen casos de uso extraídos de verdad. Es una inconsistencia deliberada por velocidad, pendiente de nivelar.
 - **Máquinas de estado explícitas como diccionarios de transición**, no como una librería de FSM — decisión simple y fácil de auditar/testear, a costa de no tener visualización automática (por eso documentamos las transiciones a mano arriba).
 - **Celery con Redis (Upstash TLS) y sesión SQLAlchemy *síncrona*** dentro de los workers, mientras la API usa sesión *async* — evita pelear con SQLAlchemy async dentro del executor de Celery, a costa de mantener dos engines (`database.py` async + `create_engine(settings.database_url_sync)` dentro de cada task).
-- **Encadenado automático de tareas** (`parse_cv` → `run_match` → `send_whatsapp_consent`) en vez de una orquestación central (ej. Celery Canvas/chains) — más simple de leer pero más difícil de reintentar solo un paso del pipeline.
+- **Acciones de IA explícitas**: `candidates/analyze` encola extracción/normalización y `/match` encola matching; separar ambos pasos permite reintentar cada etapa de forma manual.
 - **Fallback de plantilla de WhatsApp vía feature flag** (`WHATSAPP_TEMPLATE_FALLBACK_ENABLED`) en lugar de hardcodear el nombre de la plantilla — permite operar mientras Meta aprueba la plantilla real sin tocar código, solo la variable de entorno.
 - **GPT-4o vision para extracción de CV** en vez de un pipeline OCR clásico — se simplifica el pipeline (no hay paso de OCR separado) a costa de mayor costo/latencia por CV; por eso existe `CostLog` desde el día uno.
 - **Presigned URLs de R2** en vez de servir archivos desde el propio backend — evita cargar el proceso de FastAPI con streaming de binarios grandes.

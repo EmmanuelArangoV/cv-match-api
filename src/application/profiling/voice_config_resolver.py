@@ -89,7 +89,14 @@ def resolve_voice_config(
     questions_block = (
         _build_questions_block(question_set.questions) if question_set.questions else None
     )
-    consent_note = _build_consent_note(whatsapp_consent_status)
+    # ``None`` significa que el caller no tiene contexto de consentimiento. En
+    # ese caso conservamos el prompt configurado; los estados reales del flujo
+    # (PENDING/TIMEOUT/ACCEPTED) sí agregan la instrucción correspondiente.
+    consent_note = (
+        _build_consent_note(whatsapp_consent_status)
+        if whatsapp_consent_status is not None
+        else None
+    )
     system_prompt = "\n\n".join(
         p for p in (universal_prompt, base_prompt, consent_note, questions_block) if p
     )

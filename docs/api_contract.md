@@ -265,17 +265,28 @@ en auth/users (§Hallazgos).
     falla, se aborta el batch completo (excepción lanzada dentro del loop antes de persistir nada),
     incluso si otros archivos del mismo lote eran válidos.
 - Deduplicación por hash SHA-256 del contenido: si el mismo archivo ya existe como `Candidate` en
-  otro proceso, reutiliza el `Candidate` y solo crea un nuevo `ProcessCandidate` (dispara `run_match`
-  directamente, no `parse_cv`, porque ya está normalizado). Si ya existía en *este mismo* proceso,
-  no crea nada y el `task_id` devuelto es el string literal `"already_exists"`.
+  otro proceso, reutiliza el `Candidate` y solo crea un nuevo `ProcessCandidate`. Si ese candidato
+  ya tiene `normalized_cv`, queda en `MATCH_PENDING`; si no, queda en `LOADED` para que pueda
+  analizarse. Si ya existía en *este mismo* proceso, no crea nada.
 - Candidatos nuevos: crea `Candidate` en estado `LOADED` con `name="Procesando"` y
-  `email=pending_{uuid}@placeholder.riwi` (placeholders hasta que `parse_cv` complete la
-  normalización), sube el archivo a R2, encola `parse_cv.delay(...)`.
-- 200 (no 201, aunque crea recursos): `{ uploaded: int, candidates: [{ candidate_id,
-  process_candidate_id, filename, task_id, status: "LOADED" }] }` — **`status` siempre se reporta
-  como `"LOADED"` en la respuesta aunque el candidato en realidad haya sido reusado/dedupeado**
-  (bug cosmético: para los reusados el estado real es `MATCH_PENDING`, no `LOADED`).
+  `email=pending_{uuid}@placeholder.riwi` (placeholders hasta que el análisis complete la
+  normalización), sube el archivo a R2 y no encola IA.
+- 200 (no 201, aunque crea recursos): `{ uploaded: int, message, candidates: [{ candidate_id,
+  process_candidate_id, filename, task_id: null, status }] }`. El upload deja todos los CVs
+  listos para una acción explícita de análisis.
 - Sin `response_model`.
+
+### `POST /api/v1/processes/{process_id}/candidates/analyze` — analizar CVs pendientes
+- Auth: RequireRecruiter.
+- Valida que el proceso exista y no esté `CLOSED`/`ARCHIVED`.
+- Toma candidatos en `LOADED` o `CV_ERROR`, los reclama como `CV_PROCESSING` y encola
+  `parse_cv.delay(...)`. Los candidatos en `CV_ERROR` se reintentan.
+- El claim se confirma antes de publicar las tareas y usa bloqueo de fila; por ello una segunda
+  solicitud concurrente no duplica tareas. Los estados ya procesados, matcheados o en ejecución
+  se incluyen en `skipped`.
+- Si el broker rechaza una publicación, el candidato vuelve al estado que tenía antes del claim.
+- 200: `{ process_id, queued: int, tasks: [{ process_candidate_id, task_id }], skipped: [{
+  process_candidate_id, status, reason }], message }`.
 
 ### `GET /api/v1/processes/{process_id}/candidates` — listado tipo Kanban
 - Auth: cualquier usuario autenticado.
@@ -335,6 +346,8 @@ Sin cambios funcionales desde el audit anterior (solo reformateo de línea).
 - 404 si el proceso no existe.
 - 422 **RB-009** si el proceso está `CLOSED`/`ARCHIVED`.
 - 422 **RB-001** si el proceso no tiene ninguna `JobDescription` (`not process.job_descriptions`).
+- Solo inicia matching; la extracción y normalización se disparan previamente con
+  `POST /processes/{process_id}/candidates/analyze`.
 - Si no hay candidatos en `MATCH_PENDING`: 200 con `{ process_id, queued: 0, message: "No hay
   candidatos con estado MATCH_PENDING para procesar" }` (no es error).
 - Si hay elegibles: pone `process.status = MATCH_PROCESSING` **directo** (sin pasar por
