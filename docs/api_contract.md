@@ -305,9 +305,19 @@ en auth/users (§Hallazgos).
 - 404 si no existe o pertenece a otro proceso (`pc.process_id != process_id`).
 - 200: `{ process_candidate_id, process_id, candidate: { candidate_id, name, email, phone, cv_url
   (key R2, no URL descargable directamente — usar el endpoint de archivo), normalized_cv_url,
-  profile (todo el JSON normalizado del CV) }, status, whatsapp_consent, human_notes,
+  profile (todo el JSON normalizado del CV) }, status, whatsapp_consent, analysis_context, human_notes,
   human_override_match (float|null), match: { percentage, category, summary, strengths, gaps,
   breakdown } | null si `match_percentage` es 0/None }.
+
+### `PATCH /api/v1/processes/{process_id}/candidates/{process_candidate_id}/analysis-context`
+- Auth: `RequireRecruiter`.
+- Body: `{ analysis_context: string | null }` (máximo 4000 caracteres).
+- Guarda un único comentario libre del recruiter para complementar el CV antes de la extracción.
+- Solo se puede editar mientras el candidato está en `LOADED` o `CV_ERROR`.
+- El comentario se añade al prompt de `parse_cv` como contexto prioritario para datos explícitos
+  de identidad y contacto, sin inventar información.
+- 404 si el candidato no pertenece al proceso; 422 si el análisis ya comenzó.
+- 200: `{ status: "updated", analysis_context: string | null }`.
 
 ### `PATCH /api/v1/processes/{process_id}/candidates/{process_candidate_id}/override`
 - Auth: RequireRecruiter.

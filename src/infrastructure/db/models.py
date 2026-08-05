@@ -346,6 +346,10 @@ class ProcessCandidate(Base):
     human_notes: Mapped[str | None] = mapped_column(TEXT, nullable=True)
     human_override_match: Mapped[float | None] = mapped_column(DECIMAL(5, 2), nullable=True)
 
+    # Contexto libre que el recruiter proporciona antes de analizar el CV.
+    # Es específico de este proceso y se inyecta en el prompt de extracción.
+    analysis_context: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -581,4 +585,3 @@ class NotificationModel(Base):
     link: Mapped[str | None] = mapped_column(String(500), nullable=True)
     is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-

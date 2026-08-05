@@ -12,8 +12,8 @@ RIWI Match automatiza el embudo inicial de reclutamiento:
 
 1. Un reclutador crea un **proceso de contratación** (`HiringProcess`) con una **Job Description**.
 2. Sube uno o varios **CVs** (PDF, DOCX o imágenes).
-3. Un worker de Celery extrae el perfil del candidato con GPT-4o (visión), lo normaliza a un PDF con estilo propio, y dispara automáticamente el matching.
-4. Otro worker calcula un **score de match** (0–100) contra la JD y categoriza al candidato (`HIGH` / `MEDIUM` / `LOW` / `NOT_RECOMMENDED`).
+3. El CV queda en `LOADED`. Antes de pulsar **Analizar CVs**, el recruiter puede abrirlo y guardar un único comentario libre con información adicional; después, un worker de Celery extrae el perfil con GPT-4o (visión) y lo normaliza a un PDF con estilo propio.
+4. El recruiter inicia por separado el matching; otro worker calcula un **score de match** (0–100) contra la JD y categoriza al candidato (`HIGH` / `MEDIUM` / `LOW` / `NOT_RECOMMENDED`).
 5. Se envía una plantilla de **WhatsApp** pidiendo consentimiento para una llamada de voz. Un agente de IA (GPT-4o) interpreta las respuestas del candidato (texto libre o clic de botón) y actualiza su estado.
 6. *(Fase futura, no implementada aún)*: si el candidato consiente, se dispara una llamada de voz automatizada (ElevenLabs) que hace preguntas de un `QuestionSet`, transcribe y evalúa las respuestas para calcular una probabilidad de avance.
 7. El reclutador revisa todo desde el frontend [`riwi-match`](../riwi-match/README.md).
@@ -206,6 +206,7 @@ cv-match-api/
 | Subir Job Description (texto o archivo) | `POST /api/v1/processes/{id}/job-description[/upload]` | [`src/api/v1/processes.py`](src/api/v1/processes.py) |
 | Subir CVs (multi-formato) | `POST /api/v1/processes/{id}/candidates/upload` | [`src/application/cv/use_cases.py`](src/application/cv/use_cases.py) |
 | Analizar CVs pendientes | `POST /api/v1/processes/{id}/candidates/analyze` | [`src/api/v1/candidates.py`](src/api/v1/candidates.py) |
+| Guardar contexto libre para el análisis de un CV | `PATCH /api/v1/processes/{id}/candidates/{pc_id}/analysis-context` | [`src/api/v1/candidates.py`](src/api/v1/candidates.py), [`src/infrastructure/workers/tasks/parse_cv.py`](src/infrastructure/workers/tasks/parse_cv.py) |
 | Extracción de perfil con IA | (worker, encolado por `candidates/analyze`) | [`src/infrastructure/workers/tasks/parse_cv.py`](src/infrastructure/workers/tasks/parse_cv.py) |
 | Normalización de CV a PDF | (dentro de `parse_cv`) | [`src/infrastructure/cv/pdf_renderer.py`](src/infrastructure/cv/pdf_renderer.py) |
 | Matching contra la JD | `POST /api/v1/processes/{id}/match` (dispara workers) | [`src/api/v1/match.py`](src/api/v1/match.py), [`src/infrastructure/workers/tasks/run_match.py`](src/infrastructure/workers/tasks/run_match.py) |
@@ -253,6 +254,7 @@ Todos los endpoints están bajo el prefijo `/api/v1`. Autenticación: header `Au
 | POST | `/processes/{id}/candidates/analyze` | Encola `parse_cv` para candidatos `LOADED`/`CV_ERROR`; devuelve `tasks` y `skipped` | RECRUITER+ |
 | GET | `/processes/{id}/candidates` | Lista candidatos con rank, match, whatsapp_consent | autenticado |
 | GET | `/processes/{id}/candidates/{pc_id}` | Detalle completo de un candidato | autenticado |
+| PATCH | `/processes/{id}/candidates/{pc_id}/analysis-context` | Guarda un único comentario libre antes del análisis; solo en `LOADED`/`CV_ERROR`, máximo 4.000 caracteres | RECRUITER+ |
 | PATCH | `/processes/{id}/candidates/{pc_id}/override` | Notas / override manual del % de match | RECRUITER+ |
 | GET | `/processes/{id}/candidates/{pc_id}/cv/file` | Redirect a URL firmada del CV original | RECRUITER (query token) |
 | GET | `/processes/{id}/candidates/{pc_id}/cv-normalized/file` | Redirect a URL firmada del CV normalizado | RECRUITER (query token) |
@@ -374,6 +376,7 @@ erDiagram
         timestamp whatsapp_sent_at
         timestamp whatsapp_responded_at
         jsonb availability_preference
+        text analysis_context
         text human_notes
         decimal human_override_match
     }

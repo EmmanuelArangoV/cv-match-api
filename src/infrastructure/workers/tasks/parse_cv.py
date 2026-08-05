@@ -169,6 +169,24 @@ def _call_openai(content_blocks: list[dict], client: OpenAI, prompt: str, model:
     return result, response.usage.prompt_tokens, response.usage.completion_tokens
 
 
+def _build_extraction_prompt(prompt: str, analysis_context: str | None) -> str:
+    """Añade el comentario del recruiter al prompt sin alterar el prompt configurable."""
+    context = (analysis_context or "").strip()
+    if not context:
+        return prompt
+
+    return f"""{prompt}
+
+=== INFORMACIÓN ADICIONAL DEL RECRUITER ===
+{context}
+
+Usa esta información como fuente prioritaria cuando indique explícitamente datos
+de identidad o contacto del candidato, especialmente si el CV no los contiene o
+se leen con dificultad. No inventes datos que no aparezcan ni en el CV ni en este
+comentario. Conserva el resto de la información respaldada por el CV.
+"""
+
+
 # ─── Tarea Celery ──────────────────────────────────────────────────────────────
 
 
@@ -228,6 +246,7 @@ def parse_cv(
                 get_active_ai_prompt_sync,
             )
             prompt = get_active_ai_prompt_sync(db, "CV_EXTRACTION", CV_EXTRACTION_PROMPT)
+            prompt = _build_extraction_prompt(prompt, pc.analysis_context)
             model = get_active_ai_model_sync(db, "CV_EXTRACTION", "OPENAI", "gpt-4o")
             extracted, tokens_in, tokens_out = _call_openai(content_blocks, openai_client, prompt, model)
 

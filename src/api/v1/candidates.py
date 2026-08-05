@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,7 @@ from src.domain.hiring_process.rules import HiringProcessRules
 from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
 from src.infrastructure.db.database import get_db
 from src.infrastructure.db.models import (
+    CandidateStatus,
     CostLog,
     HiringProcess,
     ProcessCandidate,
@@ -28,6 +29,10 @@ from src.infrastructure.storage import r2_client
 class OverrideBody(BaseModel):
     human_notes: str | None = None
     human_override_match: float | None = None
+
+
+class AnalysisContextBody(BaseModel):
+    analysis_context: str | None = Field(default=None, max_length=4000)
 
 
 router = APIRouter(prefix="/processes", tags=["Candidates"])
@@ -225,6 +230,7 @@ async def get_candidate_detail(
         },
         "status": pc.status,
         "whatsapp_consent": pc.whatsapp_consent_status,
+        "analysis_context": pc.analysis_context,
         "human_notes": pc.human_notes,
         "human_override_match": float(pc.human_override_match) if pc.human_override_match else None,
         "match": {
@@ -415,6 +421,48 @@ async def update_candidate(
             "city": body.city,
         },
     }
+
+
+@router.patch("/{process_id}/candidates/{process_candidate_id}/analysis-context")
+async def update_candidate_analysis_context(
+    process_id: uuid.UUID,
+    process_candidate_id: uuid.UUID,
+    body: AnalysisContextBody,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Guarda el único comentario libre que se usará durante la extracción del CV."""
+    repo = CandidateRepository(db)
+    pc = await repo.find_process_candidate_by_id(process_candidate_id)
+
+    if not pc or pc.process_id != process_id:
+        raise NotFoundException("Candidato no encontrado en este proceso")
+
+    editable_statuses = {
+        CandidateStatus.LOADED.value,
+        CandidateStatus.CV_ERROR.value,
+    }
+    if pc.status not in editable_statuses:
+        raise BusinessRuleException(
+            "El contexto solo se puede editar antes de iniciar el análisis del CV."
+        )
+
+    normalized_context = body.analysis_context.strip() if body.analysis_context else None
+    pc.analysis_context = normalized_context or None
+
+    from src.infrastructure.db.audit import record_audit
+
+    # No duplicamos el texto potencialmente sensible en el log de auditoría.
+    record_audit(
+        db,
+        current_user.id,
+        "UPDATE_CV_ANALYSIS_CONTEXT",
+        "ProcessCandidate",
+        pc.id,
+        new_value={"has_analysis_context": bool(normalized_context)},
+    )
+    await db.commit()
+    return {"status": "updated", "analysis_context": pc.analysis_context}
 
 
 @router.delete("/{process_id}/candidates/{process_candidate_id}")
