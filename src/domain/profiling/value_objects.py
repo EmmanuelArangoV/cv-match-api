@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from src.domain.shared.value_objects import ValueObject
 
 
-class AdvancementLevel(str, enum.Enum):
+class AdvancementLevel(enum.StrEnum):
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"
     LOW = "LOW"
@@ -22,7 +22,9 @@ class AdvancementProbability(ValueObject):
     def descriptor(self) -> str:
         descriptors = {
             AdvancementLevel.HIGH: "Recomendado para avanzar a revisión humana o siguiente etapa",
-            AdvancementLevel.MEDIUM: "Puede avanzar, pero requiere validación puntual antes de continuar",
+            AdvancementLevel.MEDIUM: (
+                "Puede avanzar, pero requiere validación puntual antes de continuar"
+            ),
             AdvancementLevel.LOW: "No se recomienda avanzar sin revisión explícita de TA",
         }
         return descriptors[self.level]

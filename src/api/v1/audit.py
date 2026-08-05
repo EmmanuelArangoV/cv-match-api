@@ -8,6 +8,7 @@ from src.infrastructure.db.models import AuditLog, User
 
 router = APIRouter(prefix="/audit-logs", tags=["Audit"])
 
+
 @router.get("")
 async def list_audit_logs(
     limit: int = Query(10, ge=1, le=100),
@@ -48,5 +49,5 @@ async def list_audit_logs(
                 "created_at": log.created_at.isoformat(),
             }
             for log, user_name, user_last_name in rows
-        ]
+        ],
     }

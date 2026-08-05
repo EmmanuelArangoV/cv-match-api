@@ -25,18 +25,18 @@ from src.infrastructure.db.database import Base
 # Enums
 
 
-class UserRole(str, enum.Enum):
+class UserRole(enum.StrEnum):
     ADMIN = "ADMIN"
     RECRUITER = "RECRUITER"
     TA_LEADER = "TA_LEADER"
 
 
-class UserStatus(str, enum.Enum):
+class UserStatus(enum.StrEnum):
     ACTIVE = "ACTIVE"
     SUSPENDED = "SUSPENDED"
 
 
-class ProcessStatus(str, enum.Enum):
+class ProcessStatus(enum.StrEnum):
     DRAFT = "DRAFT"
     CVS_UPLOADED = "CVS_UPLOADED"
     MATCH_PROCESSING = "MATCH_PROCESSING"
@@ -48,7 +48,7 @@ class ProcessStatus(str, enum.Enum):
     ARCHIVED = "ARCHIVED"
 
 
-class CandidateStatus(str, enum.Enum):
+class CandidateStatus(enum.StrEnum):
     LOADED = "LOADED"
     CV_PROCESSING = "CV_PROCESSING"
     CV_ERROR = "CV_ERROR"
@@ -63,33 +63,33 @@ class CandidateStatus(str, enum.Enum):
     DISCARDED = "DISCARDED"
 
 
-class MatchCategory(str, enum.Enum):
+class MatchCategory(enum.StrEnum):
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"
     LOW = "LOW"
     NOT_RECOMMENDED = "NOT_RECOMMENDED"
 
 
-class WhatsAppConsentStatus(str, enum.Enum):
+class WhatsAppConsentStatus(enum.StrEnum):
     PENDING = "PENDING"
     ACCEPTED = "ACCEPTED"
     REJECTED = "REJECTED"
     TIMEOUT = "TIMEOUT"
 
 
-class CallConsentStatus(str, enum.Enum):
+class CallConsentStatus(enum.StrEnum):
     ACCEPTED = "ACCEPTED"
     REJECTED = "REJECTED"
     NO_RESPONSE = "NO_RESPONSE"
 
 
-class QuestionSetStatus(str, enum.Enum):
+class QuestionSetStatus(enum.StrEnum):
     DRAFT = "DRAFT"
     ACTIVE = "ACTIVE"
     ARCHIVED = "ARCHIVED"
 
 
-class QuestionType(str, enum.Enum):
+class QuestionType(enum.StrEnum):
     OPEN = "OPEN"
     CLOSED = "CLOSED"
     MULTIPLE_CHOICE = "MULTIPLE_CHOICE"
@@ -97,7 +97,7 @@ class QuestionType(str, enum.Enum):
     NUMERIC = "NUMERIC"
 
 
-class ProfilingRunStatus(str, enum.Enum):
+class ProfilingRunStatus(enum.StrEnum):
     PENDING = "PENDING"
     QUEUED = "QUEUED"
     CALLING = "CALLING"
@@ -110,13 +110,13 @@ class ProfilingRunStatus(str, enum.Enum):
     VOICEMAIL_DETECTED = "VOICEMAIL_DETECTED"
 
 
-class AdvancementProbability(str, enum.Enum):
+class AdvancementProbability(enum.StrEnum):
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"
     LOW = "LOW"
 
 
-class AITaskType(str, enum.Enum):
+class AITaskType(enum.StrEnum):
     CV_EXTRACTION = "CV_EXTRACTION"
     CV_MATCH = "CV_MATCH"
     JD_ENHANCEMENT = "JD_ENHANCEMENT"
@@ -125,14 +125,14 @@ class AITaskType(str, enum.Enum):
     VOICE_CALL_AGENT = "VOICE_CALL_AGENT"
 
 
-class AIProvider(str, enum.Enum):
+class AIProvider(enum.StrEnum):
     OPENAI = "OPENAI"
     ANTHROPIC = "ANTHROPIC"
     ELEVENLABS = "ELEVENLABS"
     META = "META"
 
 
-class OperationType(str, enum.Enum):
+class OperationType(enum.StrEnum):
     CV_EXTRACTION = "CV_EXTRACTION"
     CV_MATCH = "CV_MATCH"
     JD_ENHANCEMENT = "JD_ENHANCEMENT"
@@ -438,6 +438,19 @@ class ProfilingRun(Base):
             unique=True,
             postgresql_where=text("elevenlabs_conversation_id IS NOT NULL"),
         ),
+        Index(
+            "ix_profiling_runs_candidate_latest",
+            "process_candidate_id",
+            "created_at",
+        ),
+        Index(
+            "uq_profiling_runs_active_candidate",
+            "process_candidate_id",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('PENDING', 'QUEUED', 'CALLING', 'ANSWERED', 'RETRY_PENDING')"
+            ),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -550,6 +563,7 @@ class AuditLog(Base):
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+
 class AIFeedback(Base):
     __tablename__ = "ai_feedback"
 
@@ -557,8 +571,10 @@ class AIFeedback(Base):
     process_candidate_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("process_candidates.id", ondelete="CASCADE"), nullable=False
     )
-    context: Mapped[str] = mapped_column(String(50), nullable=False) # 'MATCH' o 'PROFILING'
-    evaluation: Mapped[str] = mapped_column(String(50), nullable=False) # 'CORRECT', 'PARTIAL', 'INCORRECT'
+    context: Mapped[str] = mapped_column(String(50), nullable=False)  # 'MATCH' o 'PROFILING'
+    evaluation: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # 'CORRECT', 'PARTIAL', 'INCORRECT'
     notes: Mapped[str | None] = mapped_column(String, nullable=True)
     created_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
@@ -579,7 +595,9 @@ class NotificationModel(Base):
         UUID(as_uuid=True), ForeignKey("hiring_processes.id", ondelete="SET NULL"), nullable=True
     )
     category: Mapped[str] = mapped_column(String(50), nullable=False, default="SYSTEM_INFO")
-    type: Mapped[str] = mapped_column(String(20), nullable=False, default="INFO") # INFO, SUCCESS, WARNING, ALERT
+    type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="INFO"
+    )  # INFO, SUCCESS, WARNING, ALERT
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(TEXT, nullable=False)
     link: Mapped[str | None] = mapped_column(String(500), nullable=True)

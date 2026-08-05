@@ -1,20 +1,31 @@
-﻿from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import RequireTALeader
 from src.infrastructure.db.database import get_db
-from src.infrastructure.db.models import CostLog, HiringProcess, ProcessCandidate, User, UserRole, UserStatus
+from src.infrastructure.db.models import (
+    CostLog,
+    HiringProcess,
+    ProcessCandidate,
+    User,
+    UserRole,
+    UserStatus,
+)
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
 
+
 @router.get("/ta-dashboard")
 async def get_ta_dashboard(
-    current_user: User = RequireTALeader,
-    db: AsyncSession = Depends(get_db)
+    current_user: User = RequireTALeader, db: AsyncSession = Depends(get_db)
 ) -> dict:
     total_processes = await db.scalar(select(func.count(HiringProcess.id)))
-    active_processes = await db.scalar(select(func.count(HiringProcess.id)).where(HiringProcess.status != 'CLOSED', HiringProcess.status != 'ARCHIVED'))
+    active_processes = await db.scalar(
+        select(func.count(HiringProcess.id)).where(
+            HiringProcess.status != "CLOSED", HiringProcess.status != "ARCHIVED"
+        )
+    )
     total_candidates = await db.scalar(select(func.count(ProcessCandidate.id)))
     total_cost = await db.scalar(select(func.sum(CostLog.estimated_cost))) or 0.0
     team_members_result = await db.execute(
@@ -36,9 +47,7 @@ async def get_ta_dashboard(
             {
                 "id": str(member.id),
                 "name": f"{member.name} {member.last_name}",
-                "role": member.role.value
-                if isinstance(member.role, UserRole)
-                else member.role,
+                "role": member.role.value if isinstance(member.role, UserRole) else member.role,
             }
             for member in team_members
         ],

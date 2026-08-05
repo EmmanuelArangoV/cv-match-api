@@ -1,13 +1,14 @@
 import uuid
 from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select, func, update, delete, true
+from sqlalchemy import delete, func, select, true, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.infrastructure.db.database import get_db
-from src.infrastructure.db.models import NotificationModel, User, HiringProcess, UserRole
 from src.api.deps import get_current_user
+from src.infrastructure.db.database import get_db
+from src.infrastructure.db.models import HiringProcess, NotificationModel, User, UserRole
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
@@ -58,7 +59,7 @@ async def list_notifications(
     offset: int = Query(0, ge=0),
     unread_only: bool = Query(False),
 ):
-    """Retorna las notificaciones con scoping segun rol: Reclutador (solo sus procesos) vs Admin/Lider (presupuesto y globales)."""
+    """Retorna notificaciones filtradas según el rol del usuario."""
     base_cond = _build_user_notif_condition(current_user)
 
     if unread_only:
@@ -141,10 +142,7 @@ async def mark_all_notifications_read(
     """Marca todas las notificaciones pendientes del usuario como leidas."""
     stmt = (
         update(NotificationModel)
-        .where(
-            _build_user_notif_condition(current_user)
-            & (NotificationModel.is_read.is_(False))
-        )
+        .where(_build_user_notif_condition(current_user) & (NotificationModel.is_read.is_(False)))
         .values(is_read=True)
     )
     res = await db.execute(stmt)

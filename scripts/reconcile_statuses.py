@@ -14,6 +14,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.application.hiring_process.progress import (
+    build_candidate_projection,
     get_process_progress_sync,
     sync_process_status_sync,
 )
@@ -24,6 +25,7 @@ from src.infrastructure.db.models import (
     CandidateStatus,
     HiringProcess,
     ProcessCandidate,
+    ProcessStatus,
     ProfilingRun,
     ProfilingRunStatus,
 )
@@ -47,14 +49,158 @@ def reconcile(db: Session, apply: bool) -> tuple[list[str], list[str]]:
     stale_ids: list[str] = []
     status_changes: list[str] = []
 
-    runs = db.execute(
-        select(ProfilingRun).where(
-            ProfilingRun.status.in_((
-                ProfilingRunStatus.CALLING.value,
-                ProfilingRunStatus.ANSWERED.value,
-            ))
+    # Cierra duplicados activos antes de crear el indice unico parcial. La corrida
+    # mas nueva conserva la intencion; las anteriores quedan canceladas sin publicar.
+    all_runs = (
+        db.execute(
+            select(ProfilingRun).order_by(
+                ProfilingRun.process_candidate_id, ProfilingRun.created_at.desc()
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
+    runs_by_candidate: dict[str, list[ProfilingRun]] = {}
+    for run in all_runs:
+        runs_by_candidate.setdefault(str(run.process_candidate_id), []).append(run)
+    active_values = {
+        ProfilingRunStatus.PENDING.value,
+        ProfilingRunStatus.QUEUED.value,
+        ProfilingRunStatus.CALLING.value,
+        ProfilingRunStatus.ANSWERED.value,
+        ProfilingRunStatus.RETRY_PENDING.value,
+    }
+    terminal_values = {
+        ProfilingRunStatus.COMPLETED.value,
+        ProfilingRunStatus.FAILED.value,
+        ProfilingRunStatus.NO_ANSWER.value,
+        ProfilingRunStatus.VOICEMAIL_DETECTED.value,
+        ProfilingRunStatus.CANCELLED.value,
+    }
+    for candidate_id, candidate_runs in runs_by_candidate.items():
+        active = [run for run in candidate_runs if run.status in active_values]
+        for duplicate in active[1:]:
+            status_changes.append(
+                f"run {duplicate.id}: {duplicate.status} -> CANCELLED (duplicada)"
+            )
+            if apply:
+                duplicate.status = ProfilingRunStatus.CANCELLED.value
+                duplicate.completed_at = duplicate.completed_at or now
+                duplicate.twilio_status_detail = "reconciled_duplicate"
+        for run in candidate_runs:
+            if run.status in terminal_values and run.completed_at is None:
+                status_changes.append(f"run {run.id}: completed_at faltante")
+                if apply:
+                    run.completed_at = run.updated_at or run.created_at or now
+
+    candidates = db.execute(select(ProcessCandidate)).scalars().all()
+    for pc in candidates:
+        candidate_runs = runs_by_candidate.get(str(pc.id), [])
+        latest = candidate_runs[0] if candidate_runs else None
+        process = db.get(HiringProcess, pc.process_id)
+        if not process or process.status in {
+            ProcessStatus.CLOSED.value,
+            ProcessStatus.ARCHIVED.value,
+        }:
+            continue
+        if pc.status == CandidateStatus.DISCARDED.value:
+            continue
+
+        # Una seleccion que espera consentimiento necesita una corrida visible,
+        # pero el reconciliador nunca publica el worker ni envia WhatsApp.
+        if (
+            latest is None
+            and pc.status == CandidateStatus.SELECTED_FOR_PROFILING.value
+            and process.question_set_id
+        ):
+            status_changes.append(f"candidate {pc.id}: crear run PENDING sin publicar")
+            if apply:
+                pending = ProfilingRun(
+                    process_candidate_id=pc.id,
+                    question_set_id=process.question_set_id,
+                    status=ProfilingRunStatus.PENDING.value,
+                )
+                db.add(pending)
+            continue
+        if latest is None:
+            continue
+
+        projection = build_candidate_projection(pc, latest)
+        if projection.consistency == "OK":
+            continue
+        # Las intenciones humanas posteriores a un terminal se conservan y solo
+        # aparecen como ATTENTION; no se reparan ni originan otra llamada.
+        if latest.status in terminal_values and pc.updated_at > latest.updated_at:
+            status_changes.append(
+                f"candidate {pc.id}: ATTENTION preservado ({projection.consistency_explanation})"
+            )
+            continue
+        if not apply:
+            status_changes.append(
+                f"candidate {pc.id}: alinear con run {latest.id} ({latest.status})"
+            )
+            continue
+        try:
+            # Reaplica la alineacion usando una transicion valida desde el estado
+            # tecnico anterior cuando existe una contradiccion reparable.
+            if (
+                latest.status
+                in {
+                    ProfilingRunStatus.QUEUED.value,
+                    ProfilingRunStatus.RETRY_PENDING.value,
+                }
+                and pc.status == CandidateStatus.SELECTED_FOR_PROFILING.value
+            ):
+                pc.status = CandidateStateMachine.transition(
+                    CandidateStatus(pc.status), CandidateStatus.PROFILING_QUEUED
+                ).value
+            elif (
+                latest.status
+                in {
+                    ProfilingRunStatus.CALLING.value,
+                    ProfilingRunStatus.ANSWERED.value,
+                }
+                and pc.status == CandidateStatus.PROFILING_QUEUED.value
+            ):
+                pc.status = CandidateStateMachine.transition(
+                    CandidateStatus(pc.status), CandidateStatus.PROFILING_CALLING
+                ).value
+            elif (
+                latest.status == ProfilingRunStatus.COMPLETED.value
+                and pc.status == CandidateStatus.PROFILING_CALLING.value
+            ):
+                pc.status = CandidateStateMachine.transition(
+                    CandidateStatus(pc.status), CandidateStatus.PROFILING_COMPLETED
+                ).value
+            elif latest.status in terminal_values - {
+                ProfilingRunStatus.COMPLETED.value
+            } and pc.status in {
+                CandidateStatus.PROFILING_QUEUED.value,
+                CandidateStatus.PROFILING_CALLING.value,
+            }:
+                pc.status = CandidateStateMachine.transition(
+                    CandidateStatus(pc.status), CandidateStatus.PROFILING_FAILED
+                ).value
+            status_changes.append(
+                f"candidate {pc.id}: alineado con run {latest.id} ({latest.status})"
+            )
+        except Exception as exc:
+            status_changes.append(f"candidate {pc.id}: ATTENTION no deterministica ({exc})")
+
+    runs = (
+        db.execute(
+            select(ProfilingRun).where(
+                ProfilingRun.status.in_(
+                    (
+                        ProfilingRunStatus.CALLING.value,
+                        ProfilingRunStatus.ANSWERED.value,
+                    )
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     for run in runs:
         if not is_run_stale(
             run.status,

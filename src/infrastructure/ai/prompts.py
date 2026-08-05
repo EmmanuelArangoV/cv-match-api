@@ -398,5 +398,3 @@ la respuesta completa antes de pasar a la siguiente.
 Si el candidato pide más tiempo, no puede hablar en ese momento, o pide reagendar, respeta su \
 decisión sin insistir y termina la llamada amablemente.
 """
-
-

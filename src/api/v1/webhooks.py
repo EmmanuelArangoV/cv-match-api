@@ -4,7 +4,6 @@ import hmac
 import logging
 import math
 import uuid
-from datetime import UTC, datetime
 from functools import partial
 from typing import Any
 
@@ -14,16 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.application.candidate.whatsapp_message_usecase import ProcessWhatsAppMessageUseCase
-from src.application.hiring_process.progress import sync_process_status
+from src.application.profiling.lifecycle import transition_profiling_async
 from src.application.profiling.voice_config_resolver import resolve_voice_config
 from src.config import settings
-from src.domain.candidate.state_machine import CandidateStateMachine
 from src.domain.shared.exceptions import BusinessRuleException
 from src.infrastructure.db.database import get_db
 from src.infrastructure.db.models import (
     AITaskType,
     Candidate,
-    CandidateStatus,
     CostLog,
     HiringProcess,
     OperationType,
@@ -242,14 +239,12 @@ async def twilio_twiml_webhook(
         return Response(content=_TWIML_HANGUP, media_type="application/xml")
 
     if answered_by in _MACHINE_ANSWERED_BY:
-        profiling_run.status = ProfilingRunStatus.VOICEMAIL_DETECTED.value
         profiling_run.amd_result = str(answered_by or "machine")
         await db.commit()
         retry_or_fail_profiling_call.delay(str(profiling_run.id), f"AMD:{answered_by}")
         return Response(content=_TWIML_HANGUP, media_type="application/xml")
 
     # Humano: resolver la config de voz efectiva y registrar la llamada en ElevenLabs.
-    profiling_run.status = ProfilingRunStatus.ANSWERED.value
     profiling_run.amd_result = str(answered_by)
     pc = profiling_run.process_candidate
     process = pc.process if pc else None
@@ -260,6 +255,8 @@ async def twilio_twiml_webhook(
         logger.error(f"[twilio][twiml] datos incompletos para ProfilingRun {run_id}")
         await db.commit()
         return Response(content=_TWIML_HANGUP, media_type="application/xml")
+
+    await transition_profiling_async(db, profiling_run, pc, ProfilingRunStatus.ANSWERED)
 
     from src.infrastructure.ai.prompts import VOICE_CALL_AGENT_BASE_PROMPT
     from src.infrastructure.cache.redis_client import get_active_ai_prompt
@@ -284,6 +281,13 @@ async def twilio_twiml_webhook(
         )
     except Exception as exc:
         logger.error(f"[elevenlabs] register_call fallo para run {run_id}: {exc}")
+        await transition_profiling_async(
+            db,
+            profiling_run,
+            pc,
+            ProfilingRunStatus.FAILED,
+            detail="elevenlabs_register_failed",
+        )
         await db.commit()
         return Response(content=_TWIML_HANGUP, media_type="application/xml")
 
@@ -352,7 +356,6 @@ async def twilio_status_webhook(
     if profiling_run.status != ProfilingRunStatus.CALLING.value:
         return {"status": "ignored"}
 
-    profiling_run.status = ProfilingRunStatus.VOICEMAIL_DETECTED.value
     profiling_run.twilio_status_detail = call_status
     await db.commit()
     retry_or_fail_profiling_call.delay(str(profiling_run.id), f"status:{call_status}")
@@ -448,10 +451,7 @@ async def elevenlabs_post_call_webhook(
     analysis = data.get("analysis", {}) or {}
     metadata = data.get("metadata", {}) or {}
     raw_transcript = (
-        data.get("transcript")
-        or data.get("conversation_transcript")
-        or data.get("turns")
-        or []
+        data.get("transcript") or data.get("conversation_transcript") or data.get("turns") or []
     )
 
     formatted_turns = []
@@ -478,14 +478,14 @@ async def elevenlabs_post_call_webhook(
     profiling_run.elevenlabs_conversation_id = conversation_id
     profiling_run.transcript_summary = analysis.get("transcript_summary")
     profiling_run.transcript_turns = formatted_turns
-    profiling_run.status = ProfilingRunStatus.COMPLETED.value
-    profiling_run.completed_at = datetime.now(UTC)
-
     pc = await db.get(ProcessCandidate, profiling_run.process_candidate_id)
     if pc:
         try:
-            pc.status = CandidateStateMachine.transition(
-                CandidateStatus(pc.status), CandidateStatus.PROFILING_COMPLETED
+            await transition_profiling_async(
+                db,
+                profiling_run,
+                pc,
+                ProfilingRunStatus.COMPLETED,
             )
         except BusinessRuleException as exc:
             logger.warning(f"[elevenlabs][post-call] transicion invalida para {pc.id}: {exc}")
@@ -501,8 +501,6 @@ async def elevenlabs_post_call_webhook(
         )
     )
 
-    if pc:
-        await sync_process_status(db, pc.process_id)
     await db.commit()
 
     evaluate_profiling_transcription.delay(str(profiling_run.id), transcript_text)

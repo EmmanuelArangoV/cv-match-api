@@ -86,9 +86,7 @@ async def analyze_cvs(
     results = await AnalyzeCVsUseCase(db).execute(process_id)
     queued = [result for result in results if result.task_id]
     failed_publications = {
-        result.process_candidate_id: result
-        for result in results
-        if result.error is not None
+        result.process_candidate_id: result for result in results if result.error is not None
     }
     queued_ids = {result.process_candidate_id for result in queued}
 
@@ -131,11 +129,7 @@ async def analyze_cvs(
             for result in queued
         ],
         "skipped": skipped,
-        "message": (
-            "Análisis de CVs iniciado"
-            if queued
-            else "No hay CVs pendientes de análisis"
-        ),
+        "message": ("Análisis de CVs iniciado" if queued else "No hay CVs pendientes de análisis"),
     }
 
 
@@ -281,6 +275,7 @@ async def patch_candidate_override(
         pc.human_override_match = None
 
     from src.infrastructure.db.audit import record_audit
+
     record_audit(db, current_user.id, "MANUAL_OVERRIDE", "ProcessCandidate", pc.id)
     await db.commit()
     return {"status": "updated"}

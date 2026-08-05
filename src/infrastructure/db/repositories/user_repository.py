@@ -35,4 +35,3 @@ class UserRepository:
     async def delete(self, user: User) -> None:
         await self._db.delete(user)
         await self._db.flush()
-

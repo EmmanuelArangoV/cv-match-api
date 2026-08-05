@@ -84,4 +84,3 @@ class DeleteUserUseCase:
         if not user:
             raise NotFoundException("User no encontrado")
         await self._repo.delete(user)
-

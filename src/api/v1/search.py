@@ -4,7 +4,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import get_current_user
 from src.infrastructure.db.database import get_db
-from src.infrastructure.db.models import Candidate, HiringProcess, ProcessCandidate, QuestionSet, User, UserRole
+from src.infrastructure.db.models import (
+    Candidate,
+    HiringProcess,
+    ProcessCandidate,
+    QuestionSet,
+    User,
+    UserRole,
+)
 
 router = APIRouter(prefix="/search", tags=["Search"])
 
@@ -19,11 +26,22 @@ async def global_search(
 ) -> dict:
     """Busca procesos, candidatos y sets visibles para el usuario actual."""
     term = f"%{q.strip()}%"
-    process_filter = [HiringProcess.recruiter_id == current_user.id] if current_user.role == UserRole.RECRUITER.value else []
+    process_filter = (
+        [HiringProcess.recruiter_id == current_user.id]
+        if current_user.role == UserRole.RECRUITER.value
+        else []
+    )
 
     process_rows = await db.execute(
         select(HiringProcess)
-        .where(*process_filter, or_(HiringProcess.name.ilike(term), HiringProcess.job_title.ilike(term), HiringProcess.area.ilike(term)))
+        .where(
+            *process_filter,
+            or_(
+                HiringProcess.name.ilike(term),
+                HiringProcess.job_title.ilike(term),
+                HiringProcess.area.ilike(term),
+            ),
+        )
         .order_by(HiringProcess.created_at.desc())
     )
 
@@ -33,7 +51,11 @@ async def global_search(
         .join(HiringProcess, ProcessCandidate.process_id == HiringProcess.id)
         .where(
             *process_filter,
-            or_(Candidate.name.ilike(term), Candidate.last_name.ilike(term), Candidate.email.ilike(term)),
+            or_(
+                Candidate.name.ilike(term),
+                Candidate.last_name.ilike(term),
+                Candidate.email.ilike(term),
+            ),
         )
         .order_by(ProcessCandidate.updated_at.desc())
     )
@@ -44,16 +66,11 @@ async def global_search(
         .order_by(QuestionSet.updated_at.desc())
     )
 
-    all_results = [
-        ("process", process)
-        for process in process_rows.scalars().all()
-    ] + [
-        ("candidate", row)
-        for row in candidate_rows.all()
-    ] + [
-        ("question_set", question_set)
-        for question_set in set_rows.scalars().all()
-    ]
+    all_results = (
+        [("process", process) for process in process_rows.scalars().all()]
+        + [("candidate", row) for row in candidate_rows.all()]
+        + [("question_set", question_set) for question_set in set_rows.scalars().all()]
+    )
     page_results = all_results[offset : offset + limit]
 
     return {
@@ -61,7 +78,12 @@ async def global_search(
         "limit": limit,
         "offset": offset,
         "processes": [
-            {"id": str(process.id), "name": process.name, "job_title": process.job_title, "area": process.area}
+            {
+                "id": str(process.id),
+                "name": process.name,
+                "job_title": process.job_title,
+                "area": process.area,
+            }
             for result_type, process in page_results
             if result_type == "process"
         ],
@@ -78,7 +100,11 @@ async def global_search(
             for process_candidate, candidate, process in [row]
         ],
         "question_sets": [
-            {"id": question_set.id.__str__(), "name": question_set.name, "description": question_set.description}
+            {
+                "id": question_set.id.__str__(),
+                "name": question_set.name,
+                "description": question_set.description,
+            }
             for result_type, question_set in page_results
             if result_type == "question_set"
         ],

@@ -18,11 +18,12 @@ router = APIRouter(prefix="/system", tags=["System"])
 
 async def check_twilio() -> dict[str, str]:
     try:
+
         def _check():
             client = get_twilio_client()
             # Petición rápida para validar credenciales
             client.api.v2010.accounts(settings.twilio_account_sid).fetch()
-        
+
         await asyncio.to_thread(_check)
         return {"status": "ok", "details": "Conectado"}
     except Exception as e:
@@ -32,10 +33,11 @@ async def check_twilio() -> dict[str, str]:
 
 async def check_elevenlabs() -> dict[str, str]:
     try:
+
         def _check():
             client = get_elevenlabs_client()
             client.user.get()
-        
+
         await asyncio.to_thread(_check)
         return {"status": "ok", "details": "Conectado"}
     except Exception as e:
@@ -51,7 +53,7 @@ async def check_meta_whatsapp() -> dict[str, str]:
             resp = await client.get(
                 url,
                 params={"fields": "verified_name"},
-                headers={"Authorization": f"Bearer {settings.meta_whatsapp_access_token}"}
+                headers={"Authorization": f"Bearer {settings.meta_whatsapp_access_token}"},
             )
             resp.raise_for_status()
         return {"status": "ok", "details": "Conectado"}
@@ -62,10 +64,11 @@ async def check_meta_whatsapp() -> dict[str, str]:
 
 async def check_r2() -> dict[str, str]:
     try:
+
         def _check():
             client = get_r2_client()
             client.head_bucket(Bucket=settings.r2_bucket_name)
-        
+
         await asyncio.to_thread(_check)
         return {"status": "ok", "details": "Conectado"}
     except Exception as e:
@@ -82,7 +85,7 @@ async def integrations_health() -> dict[str, Any]:
         check_meta_whatsapp(),
         check_r2(),
     )
-    
+
     return {
         "twilio": results[0],
         "elevenlabs": results[1],

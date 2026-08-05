@@ -29,6 +29,7 @@ class TokenResponse(BaseModel):
 async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)) -> dict:
     result = await LoginUseCase(UserRepository(db)).execute(body.email, body.password)
     from src.infrastructure.db.audit import record_audit
+
     user = await UserRepository(db).find_by_email(body.email)
     if user:
         record_audit(db, user.id, "USER_LOGIN", "User", user.id)
@@ -44,4 +45,3 @@ async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)) -> d
 @router.post("/logout", status_code=204)
 async def logout(body: RefreshRequest) -> None:
     await LogoutUseCase().execute(body.refresh_token)
-

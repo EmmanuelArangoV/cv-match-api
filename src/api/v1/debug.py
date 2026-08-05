@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.application.candidate.whatsapp_message_usecase import ProcessWhatsAppMessageUseCase
 from src.config import settings
+from src.domain.candidate.state_machine import CandidateStateMachine
 from src.infrastructure.db.database import get_db
 from src.infrastructure.db.models import (
     Candidate,
@@ -18,6 +19,8 @@ from src.infrastructure.db.models import (
     HiringProcess,
     ProcessCandidate,
     ProcessStatus,
+    ProfilingRun,
+    ProfilingRunStatus,
     User,
     UserRole,
     UserStatus,
@@ -92,7 +95,6 @@ async def seed_whatsapp_test(
         name=name_parts[0],
         last_name=name_parts[1] if len(name_parts) > 1 else "",
         phone=body.phone,
-        status=CandidateStatus.MATCHED,
     )
     db.add(candidate)
     await db.flush()
@@ -103,6 +105,7 @@ async def seed_whatsapp_test(
         process_id=process.id,
         candidate_id=candidate.id,
         whatsapp_consent_status=WhatsAppConsentStatus.PENDING,
+        status=CandidateStatus.MATCHED,
         match_percentage=85.0,
     )
     db.add(pc)
@@ -136,6 +139,7 @@ async def simulate_whatsapp_message(
 @router.post("/trigger-profiling-call/{process_candidate_id}")
 async def trigger_profiling_call(
     process_candidate_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
     _: None = Depends(_require_dev),
 ) -> dict:
     """
@@ -146,5 +150,51 @@ async def trigger_profiling_call(
     """
     from src.infrastructure.workers.tasks.profiling import start_profiling_call
 
-    task = start_profiling_call.delay(str(process_candidate_id))
-    return {"ok": True, "task_id": task.id, "process_candidate_id": str(process_candidate_id)}
+    pc = await db.get(ProcessCandidate, process_candidate_id)
+    if not pc:
+        raise HTTPException(status_code=404, detail="ProcessCandidate no encontrado")
+    process = await db.get(HiringProcess, pc.process_id)
+    if not process or not process.question_set_id:
+        raise HTTPException(status_code=422, detail="El proceso no tiene QuestionSet")
+    active = await db.scalar(
+        select(ProfilingRun).where(
+            ProfilingRun.process_candidate_id == pc.id,
+            ProfilingRun.status.in_(
+                [
+                    ProfilingRunStatus.PENDING.value,
+                    ProfilingRunStatus.QUEUED.value,
+                    ProfilingRunStatus.CALLING.value,
+                    ProfilingRunStatus.ANSWERED.value,
+                    ProfilingRunStatus.RETRY_PENDING.value,
+                ]
+            ),
+        )
+    )
+    if active:
+        return {"ok": True, "idempotent": True, "run_id": str(active.id)}
+    if pc.status == CandidateStatus.MATCHED.value:
+        pc.status = CandidateStateMachine.transition(
+            CandidateStatus(pc.status), CandidateStatus.SELECTED_FOR_PROFILING
+        )
+    if pc.status in {
+        CandidateStatus.SELECTED_FOR_PROFILING.value,
+        CandidateStatus.PROFILING_FAILED.value,
+    }:
+        pc.status = CandidateStateMachine.transition(
+            CandidateStatus(pc.status), CandidateStatus.PROFILING_QUEUED
+        )
+    run = ProfilingRun(
+        process_candidate_id=pc.id,
+        question_set_id=process.question_set_id,
+        status=ProfilingRunStatus.QUEUED,
+    )
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+    task = start_profiling_call.delay(str(run.id))
+    return {
+        "ok": True,
+        "task_id": task.id,
+        "run_id": str(run.id),
+        "process_candidate_id": str(process_candidate_id),
+    }

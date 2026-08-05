@@ -91,7 +91,10 @@ class UploadCVsUseCase:
         from sqlalchemy import func, select
 
         from src.infrastructure.db.models import CostLog
-        cost_query = select(func.sum(CostLog.estimated_cost)).where(CostLog.process_id == process_id)
+
+        cost_query = select(func.sum(CostLog.estimated_cost)).where(
+            CostLog.process_id == process_id
+        )
         cost_result = await self._db.execute(cost_query)
         total_cost = cost_result.scalar() or 0.0
         HiringProcessRules.require_budget_available(total_cost, float(process.budget_max_usd))
@@ -117,7 +120,8 @@ class UploadCVsUseCase:
             size_mb = len(content) / (1024 * 1024)
             if size_mb > settings.max_cv_file_size_mb:
                 raise BusinessRuleException(
-                    f"El archivo {file.filename} supera el límite de {settings.max_cv_file_size_mb}MB."
+                    f"El archivo {file.filename} supera el límite de "
+                    f"{settings.max_cv_file_size_mb}MB."
                 )
 
             valid_files.append((file, ext, content))

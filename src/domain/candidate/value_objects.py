@@ -8,7 +8,7 @@ from src.domain.shared.exceptions import BusinessRuleException
 from src.domain.shared.value_objects import ValueObject
 
 
-class AvailabilityType(str, enum.Enum):
+class AvailabilityType(enum.StrEnum):
     ANYTIME = "ANYTIME"
     MORNING = "MORNING"
     AFTERNOON = "AFTERNOON"

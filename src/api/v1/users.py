@@ -5,7 +5,6 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import RequireAdmin, RequireTALeader, get_current_user, get_db
-from src.domain.shared.exceptions import ForbiddenException
 from src.application.auth.users_use_cases import (
     CreateUserUseCase,
     DeleteUserUseCase,
@@ -13,6 +12,7 @@ from src.application.auth.users_use_cases import (
     UpdateUserStatusUseCase,
     UpdateUserUseCase,
 )
+from src.domain.shared.exceptions import ForbiddenException
 from src.infrastructure.db.models import User, UserRole, UserStatus
 from src.infrastructure.db.repositories.user_repository import UserRepository
 
@@ -99,6 +99,7 @@ async def create_user(
     repo = UserRepository(db)
     user = await CreateUserUseCase(repo).execute(body.model_dump())
     from src.infrastructure.db.audit import record_audit
+
     record_audit(db, current_user.id, "USER_MANAGEMENT", "User", user.id)
     await db.commit()
     await db.refresh(user)
@@ -114,14 +115,14 @@ async def update_user(
 ) -> UserResponse:
     repo = UserRepository(db)
     target_user = await repo.find_by_id(user_id)
-    if (
-        current_user.role == UserRole.TA_LEADER.value
-        and (not target_user or target_user.role == UserRole.ADMIN.value or body.role == UserRole.ADMIN)
+    if current_user.role == UserRole.TA_LEADER.value and (
+        not target_user or target_user.role == UserRole.ADMIN.value or body.role == UserRole.ADMIN
     ):
         raise ForbiddenException("Los líderes no pueden modificar cuentas de administrador")
     update_data = {k: v for k, v in body.model_dump().items() if v is not None}
     user = await UpdateUserUseCase(repo).execute(user_id, update_data)
     from src.infrastructure.db.audit import record_audit
+
     record_audit(db, current_user.id, "USER_MANAGEMENT", "User", user.id)
     await db.commit()
     await db.refresh(user)
@@ -143,6 +144,7 @@ async def update_user_status(
         raise ForbiddenException("Los líderes no pueden modificar cuentas de administrador")
     user = await UpdateUserStatusUseCase(repo).execute(user_id, body.status.value)
     from src.infrastructure.db.audit import record_audit
+
     record_audit(db, current_user.id, "USER_MANAGEMENT", "User", user.id)
     await db.commit()
     await db.refresh(user)
@@ -158,6 +160,6 @@ async def delete_user(
     repo = UserRepository(db)
     await DeleteUserUseCase(repo).execute(user_id)
     from src.infrastructure.db.audit import record_audit
+
     record_audit(db, current_user.id, "USER_MANAGEMENT", "User", str(user_id))
     await db.commit()
-

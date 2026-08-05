@@ -42,7 +42,8 @@ class QuestionIn(BaseModel):
     def validate_type(self) -> None:
         if self.type not in VALID_QUESTION_TYPES:
             raise BusinessRuleException(
-                f"Tipo de pregunta inválido: '{self.type}'. Valores válidos: {sorted(VALID_QUESTION_TYPES)}"
+                f"Tipo de pregunta inválido: '{self.type}'. "
+                f"Valores válidos: {sorted(VALID_QUESTION_TYPES)}"
             )
 
 
@@ -297,7 +298,8 @@ async def add_question(
 
     if body.type not in VALID_QUESTION_TYPES:
         raise BusinessRuleException(
-            f"Tipo de pregunta inválido: '{body.type}'. Valores válidos: {sorted(VALID_QUESTION_TYPES)}"
+            f"Tipo de pregunta inválido: '{body.type}'. "
+            f"Valores válidos: {sorted(VALID_QUESTION_TYPES)}"
         )
 
     # Auto order_index si no viene
@@ -362,7 +364,8 @@ async def update_question(
     if body.type is not None:
         if body.type not in VALID_QUESTION_TYPES:
             raise BusinessRuleException(
-                f"Tipo de pregunta inválido: '{body.type}'. Valores válidos: {sorted(VALID_QUESTION_TYPES)}"
+                f"Tipo de pregunta inválido: '{body.type}'. "
+                f"Valores válidos: {sorted(VALID_QUESTION_TYPES)}"
             )
         pq.type = body.type
     if body.expected_answer is not None:

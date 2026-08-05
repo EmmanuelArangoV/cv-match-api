@@ -115,6 +115,7 @@ async def activate_model(
     await db.refresh(model)
 
     from src.infrastructure.cache.redis_client import redis_client
+
     if redis_client:
         await redis_client.delete(f"ai_model:active:{model.task_type}:{model.provider}")
 
@@ -169,6 +170,7 @@ async def create_prompt(
 
     if body.activate:
         from src.infrastructure.cache.redis_client import redis_client
+
         if redis_client:
             await redis_client.delete(f"ai_prompt:active:{body.task_type}")
 
@@ -187,9 +189,7 @@ async def activate_prompt(
     if not prompt:
         raise NotFoundException("Versión de prompt no encontrada")
 
-    siblings = await db.execute(
-        select(AIPrompt).where(AIPrompt.task_type == prompt.task_type)
-    )
+    siblings = await db.execute(select(AIPrompt).where(AIPrompt.task_type == prompt.task_type))
     for sibling in siblings.scalars().all():
         sibling.is_active = sibling.id == prompt.id
         sibling.updated_by = current_user.id
@@ -198,6 +198,7 @@ async def activate_prompt(
     await db.refresh(prompt)
 
     from src.infrastructure.cache.redis_client import redis_client
+
     if redis_client:
         await redis_client.delete(f"ai_prompt:active:{prompt.task_type}")
 
@@ -234,11 +235,7 @@ async def update_global_setting(
         MatchThresholds.from_dict(body.setting_value)  # valida 0 <= low <= medium <= high <= 100
     if setting_key == "platform_total_budget":
         amount = body.setting_value.get("amount")
-        if (
-            isinstance(amount, bool)
-            or not isinstance(amount, (int, float))
-            or amount < 0
-        ):
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)) or amount < 0:
             raise BusinessRuleException(
                 "El presupuesto total debe ser un número mayor o igual a cero."
             )
@@ -262,6 +259,7 @@ async def update_global_setting(
     await db.commit()
     await db.refresh(setting)
     from src.infrastructure.cache.redis_client import redis_client
+
     if redis_client:
         await redis_client.delete(f"global_setting:{setting_key}")
     return _serialize_setting(setting)

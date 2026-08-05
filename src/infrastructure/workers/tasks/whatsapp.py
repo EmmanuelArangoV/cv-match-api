@@ -16,27 +16,38 @@ _SyncSession = sessionmaker(bind=_engine)
 
 
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=60, name="send_whatsapp_consent")
-def send_whatsapp_consent(self, process_candidate_id: str) -> dict:
-    from src.infrastructure.db.models import ProcessCandidate
+def send_whatsapp_consent(self, profiling_run_id: str) -> dict:
+    from src.infrastructure.db.models import (
+        ProcessCandidate,
+        ProfilingRun,
+        ProfilingRunStatus,
+    )
 
-    pc_uuid = uuid.UUID(process_candidate_id)
+    run_uuid = uuid.UUID(profiling_run_id)
 
     with _SyncSession() as db:
         try:
             from sqlalchemy import select
 
-            pc: ProcessCandidate = db.execute(
-                select(ProcessCandidate)
-                .where(ProcessCandidate.id == pc_uuid)
+            run: ProfilingRun = db.execute(
+                select(ProfilingRun)
+                .where(ProfilingRun.id == run_uuid)
                 .options(
-                    selectinload(ProcessCandidate.candidate),
-                    selectinload(ProcessCandidate.process),
+                    selectinload(ProfilingRun.process_candidate).selectinload(
+                        ProcessCandidate.candidate
+                    ),
+                    selectinload(ProfilingRun.process_candidate).selectinload(
+                        ProcessCandidate.process
+                    ),
                 )
             ).scalar_one_or_none()
 
-            if not pc:
-                return {"error": "ProcessCandidate no encontrado"}
+            if not run:
+                return {"error": "ProfilingRun no encontrado"}
+            if run.status != ProfilingRunStatus.PENDING.value:
+                return {"status": run.status, "idempotent": True}
 
+            pc = run.process_candidate
             candidate = pc.candidate
             process = pc.process
 
@@ -84,9 +95,11 @@ def resolve_whatsapp_timeouts(self) -> dict:
 
     from sqlalchemy import select
 
+    from src.application.profiling.lifecycle import transition_profiling_sync
     from src.infrastructure.db.models import (
-        CandidateStatus,
         ProcessCandidate,
+        ProfilingRun,
+        ProfilingRunStatus,
         WhatsAppConsentStatus,
     )
     from src.infrastructure.workers.tasks.profiling import start_profiling_call
@@ -96,31 +109,35 @@ def resolve_whatsapp_timeouts(self) -> dict:
 
     with _SyncSession() as db:
         try:
-            candidates = (
+            runs = (
                 db.execute(
-                    select(ProcessCandidate)
+                    select(ProfilingRun)
+                    .join(
+                        ProcessCandidate,
+                        ProfilingRun.process_candidate_id == ProcessCandidate.id,
+                    )
                     .where(
                         ProcessCandidate.whatsapp_consent_status
                         == WhatsAppConsentStatus.PENDING.value
                     )
                     .where(ProcessCandidate.whatsapp_sent_at <= timeout_threshold)
+                    .where(ProfilingRun.status == ProfilingRunStatus.PENDING.value)
+                    .options(selectinload(ProfilingRun.process_candidate))
                 )
                 .scalars()
                 .all()
             )
 
             processed = []
-            for pc in candidates:
-                pc.whatsapp_consent_status = WhatsAppConsentStatus.TIMEOUT.value
-
-                # No respondio a tiempo — igual se llama (RB-004 / WhatsApp logic), el
-                # agente pedira el consentimiento verbal en la llamada al no tener el de
-                # WhatsApp. Solo si sigue realmente en cola (nadie lo cancelo mientras tanto).
-                if pc.status == CandidateStatus.PROFILING_QUEUED.value:
-                    start_profiling_call.delay(str(pc.id))
-                    processed.append(str(pc.id))
+            for run in runs:
+                pc = run.process_candidate
+                pc.whatsapp_consent_status = WhatsAppConsentStatus.TIMEOUT
+                transition_profiling_sync(db, run, pc, ProfilingRunStatus.QUEUED)
+                processed.append(str(run.id))
 
             db.commit()
+            for run_id in processed:
+                start_profiling_call.delay(run_id)
             return {"processed_count": len(processed), "processed_ids": processed}
         except Exception as exc:
             db.rollback()

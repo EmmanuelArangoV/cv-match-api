@@ -18,6 +18,7 @@ from src.api.deps import (
 )
 from src.application.hiring_process.jd_parse_usecase import ParseJobDescriptionUseCase
 from src.application.hiring_process.progress import (
+    build_candidate_projections,
     sync_process_status,
 )
 from src.domain.hiring_process.rules import HiringProcessRules
@@ -138,9 +139,7 @@ async def create_process(
         )
     )
     configured_limit = (
-        total_budget_setting.get("amount", 0)
-        if isinstance(total_budget_setting, dict)
-        else 0
+        total_budget_setting.get("amount", 0) if isinstance(total_budget_setting, dict) else 0
     )
     total_budget = float(configured_limit or 0)
     if total_budget > 0:
@@ -160,7 +159,9 @@ async def create_process(
     recruiter_id = current_user.id
     if body.recruiter_id:
         if current_user.role not in [UserRole.ADMIN.value, UserRole.TA_LEADER.value]:
-            raise BusinessRuleException("No tienes permiso para asignar procesos a otros recruiters.")
+            raise BusinessRuleException(
+                "No tienes permiso para asignar procesos a otros recruiters."
+            )
         assigned_recruiter = await db.scalar(select(User).where(User.id == body.recruiter_id))
         if (
             not assigned_recruiter
@@ -187,10 +188,14 @@ async def create_process(
     await db.refresh(process)
 
     from src.application.notifications.service import create_notification_async
+
     await create_notification_async(
         db,
         title="Nuevo proceso creado",
-        description=f"Se creó el proceso '{process.name}' para el cargo {process.job_title} en el área {process.area}.",
+        description=(
+            f"Se creó el proceso '{process.name}' para el cargo {process.job_title} "
+            f"en el área {process.area}."
+        ),
         category="PROCESS_CREATED",
         type="INFO",
         user_id=recruiter_id,
@@ -648,6 +653,41 @@ async def get_process_progress_endpoint(
     return progress.as_dict()
 
 
+@router.get("/{process_id}/pipeline")
+async def get_process_pipeline(
+    process_id: uuid.UUID,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Una tarjeta por candidato, proyectada por la misma fuente del progreso."""
+
+    result = await db.execute(
+        select(HiringProcess)
+        .where(HiringProcess.id == process_id)
+        .options(
+            selectinload(HiringProcess.recruiter),
+            selectinload(HiringProcess.process_candidates).selectinload(ProcessCandidate.candidate),
+            selectinload(HiringProcess.process_candidates).selectinload(
+                ProcessCandidate.profiling_runs
+            ),
+        )
+    )
+    process = result.scalar_one_or_none()
+    if not process:
+        raise NotFoundException("Proceso no encontrado")
+    if current_user.role == UserRole.RECRUITER.value and process.recruiter_id != current_user.id:
+        raise NotFoundException("Proceso no encontrado")
+
+    candidates = list(process.process_candidates)
+    runs = [run for pc in candidates for run in pc.profiling_runs]
+    cards = build_candidate_projections(candidates, runs)
+    return {
+        "process_id": str(process.id),
+        "total": len(cards),
+        "candidates": [card.as_dict() for card in cards],
+    }
+
+
 @router.get("/{process_id}/metrics", response_model=dict)
 async def get_process_metrics(
     process_id: uuid.UUID,
@@ -758,9 +798,7 @@ async def list_job_descriptions(
 
 @router.get("/{process_id}/export/ranking")
 async def export_ranking(
-    process_id: uuid.UUID,
-    current_user: User = RequireRecruiter,
-    db: AsyncSession = Depends(get_db)
+    process_id: uuid.UUID, current_user: User = RequireRecruiter, db: AsyncSession = Depends(get_db)
 ) -> StreamingResponse:
     process = await db.get(HiringProcess, process_id)
     if not process:
@@ -788,23 +826,20 @@ async def export_ranking(
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=ranking_{process_id}.csv"}
+        headers={"Content-Disposition": f"attachment; filename=ranking_{process_id}.csv"},
     )
+
 
 @router.get("/{process_id}/export/costs")
 async def export_costs(
-    process_id: uuid.UUID,
-    current_user: User = RequireRecruiter,
-    db: AsyncSession = Depends(get_db)
+    process_id: uuid.UUID, current_user: User = RequireRecruiter, db: AsyncSession = Depends(get_db)
 ) -> StreamingResponse:
     process = await db.get(HiringProcess, process_id)
     if not process:
         raise NotFoundException("Proceso no encontrado")
 
     query = (
-        select(CostLog)
-        .where(CostLog.process_id == process_id)
-        .order_by(CostLog.created_at.desc())
+        select(CostLog).where(CostLog.process_id == process_id).order_by(CostLog.created_at.desc())
     )
     result = await db.execute(query)
     logs = result.scalars().all()
@@ -821,5 +856,5 @@ async def export_costs(
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=costs_{process_id}.csv"}
+        headers={"Content-Disposition": f"attachment; filename=costs_{process_id}.csv"},
     )

@@ -1,3 +1,6 @@
+# The prompt below intentionally contains long literal lines that are sent to the model.
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import json
@@ -11,14 +14,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from src.application.profiling.lifecycle import transition_profiling_async
 from src.config import settings
-from src.domain.candidate.state_machine import CandidateStateMachine
-from src.domain.shared.exceptions import BusinessRuleException
 from src.infrastructure.db.models import (
     Candidate,
-    CandidateStatus,
     HiringProcess,
     ProcessCandidate,
+    ProfilingRun,
+    ProfilingRunStatus,
     WhatsAppConsentStatus,
 )
 from src.infrastructure.messaging.whatsapp_client import whatsapp_client
@@ -305,9 +308,7 @@ class ProcessWhatsAppMessageUseCase:
             job_title=process.job_title,
             consent_status=pc.whatsapp_consent_status,
         )
-        messages: list[ChatCompletionMessageParam] = [
-            {"role": "system", "content": system_prompt}
-        ]
+        messages: list[ChatCompletionMessageParam] = [{"role": "system", "content": system_prompt}]
         for turn in history[-_MAX_HISTORY_TURNS:]:
             turn_text = str(turn.get("text", ""))
             if turn.get("role") == "assistant":
@@ -346,48 +347,55 @@ class ProcessWhatsAppMessageUseCase:
         user_text: str,
     ) -> None:
         already_accepted = pc.whatsapp_consent_status == WhatsAppConsentStatus.ACCEPTED.value
+        publish_run_id: str | None = None
 
         if intent == "ACCEPTED":
-            pc.whatsapp_consent_status = WhatsAppConsentStatus.ACCEPTED.value
+            pc.whatsapp_consent_status = WhatsAppConsentStatus.ACCEPTED
             pc.whatsapp_responded_at = datetime.now(UTC)
             reply = reply or _ACCEPT_REPLY
 
-            # El consentimiento por WhatsApp reemplaza la selección manual explícita
-            # (RB-004) cuando el WhatsApp se disparó automáticamente tras el match —
-            # sin este avance de estado, start_profiling_call falla siempre: la
-            # transición a PROFILING_CALLING solo es válida desde PROFILING_QUEUED.
-            # El chat ahora sigue conversacional despues de ACCEPTED (para que el
-            # candidato pueda seguir preguntando) — si la IA vuelve a clasificar un
-            # mensaje posterior como ACCEPTED (p.ej. una afirmacion suelta), no hay
-            # que repetir la transicion de estado ni volver a encolar la llamada.
             if not already_accepted:
-                try:
-                    status = CandidateStateMachine.transition(
-                        CandidateStatus(pc.status), CandidateStatus.SELECTED_FOR_PROFILING
+                run = await self.db.scalar(
+                    select(ProfilingRun)
+                    .where(
+                        ProfilingRun.process_candidate_id == pc.id,
+                        ProfilingRun.status == ProfilingRunStatus.PENDING.value,
                     )
-                    pc.status = CandidateStateMachine.transition(
-                        status, CandidateStatus.PROFILING_QUEUED
-                    )
-                except BusinessRuleException:
-                    pass  # ya en un estado de profiling en curso; no bloquear el consentimiento
-
-                # Encolar la llamada a Twilio con el delay configurado (24h por defecto)
-                from src.infrastructure.workers.tasks.profiling import start_profiling_call
-
-                start_profiling_call.apply_async(
-                    args=[str(pc.id)], countdown=settings.profiling_delay_seconds
+                    .with_for_update()
                 )
+                if run:
+                    await transition_profiling_async(
+                        self.db, run, pc, ProfilingRunStatus.QUEUED
+                    )
+                    publish_run_id = str(run.id)
 
         elif intent == "REJECTED":
-            pc.whatsapp_consent_status = WhatsAppConsentStatus.REJECTED.value
+            pc.whatsapp_consent_status = WhatsAppConsentStatus.REJECTED
             pc.whatsapp_responded_at = datetime.now(UTC)
             reply = reply or _REJECT_REPLY
 
-            # Rechazo explicito: sacarlo de la cola para que nunca se le llame.
-            if pc.status == CandidateStatus.PROFILING_QUEUED.value:
-                pc.status = CandidateStateMachine.transition(
-                    CandidateStatus(pc.status), CandidateStatus.SELECTED_FOR_PROFILING
-                ).value
+            run = await self.db.scalar(
+                select(ProfilingRun)
+                .where(
+                    ProfilingRun.process_candidate_id == pc.id,
+                    ProfilingRun.status.in_(
+                        [
+                            ProfilingRunStatus.PENDING.value,
+                            ProfilingRunStatus.QUEUED.value,
+                            ProfilingRunStatus.RETRY_PENDING.value,
+                        ]
+                    ),
+                )
+                .with_for_update()
+            )
+            if run:
+                await transition_profiling_async(
+                    self.db,
+                    run,
+                    pc,
+                    ProfilingRunStatus.CANCELLED,
+                    detail="consent_rejected",
+                )
 
         if availability and intent in ("ACCEPTED", "AVAILABILITY_ONLY"):
             pc.availability_preference = availability
@@ -409,6 +417,13 @@ class ProcessWhatsAppMessageUseCase:
         pc.whatsapp_conversation = updated_history[-_MAX_HISTORY_TURNS:]
 
         await self.db.commit()
+
+        if publish_run_id:
+            from src.infrastructure.workers.tasks.profiling import start_profiling_call
+
+            start_profiling_call.apply_async(
+                args=[publish_run_id], countdown=settings.profiling_delay_seconds
+            )
 
         if reply:
             # El estado ya quedo comiteado — un fallo de envio aqui no debe

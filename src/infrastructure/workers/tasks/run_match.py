@@ -210,6 +210,7 @@ def execute_match(
 
         if remaining == 0:
             from src.application.notifications.service import create_notification_sync
+
             create_notification_sync(
                 db,
                 title="Match completado",
@@ -224,6 +225,7 @@ def execute_match(
         sync_process_status_sync(db, proc_uuid)
 
         from src.application.notifications.service import check_and_notify_budget_sync
+
         check_and_notify_budget_sync(db, proc_uuid)
 
         db.commit()

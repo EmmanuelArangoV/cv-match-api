@@ -19,9 +19,9 @@ from src.api.v1 import (
     question_sets,
     reports,
     search,
+    system,
     users,
     webhooks,
-    system,
 )
 from src.config import settings
 from src.domain.shared.exceptions import (

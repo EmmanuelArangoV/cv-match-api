@@ -76,4 +76,3 @@ class CandidateRepository:
 
     async def delete_process_candidate(self, pc: ProcessCandidate) -> None:
         await self._db.delete(pc)
-

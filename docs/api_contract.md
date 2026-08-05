@@ -541,18 +541,33 @@ y `global_router` bajo `/profiling/...` (vista global, cross-proceso).
   (**RB-004**, `require_manual_candidate_selection`) si `process_candidate_ids` viene vacío. 422
   (**RB-003**, `require_question_set_for_profiling`) si el proceso no tiene `question_set_id` —
   usar primero `PATCH /processes/{id}/question-set` (§2).
-- Por cada id en el body: si no existe en este proceso o su estado actual no es `MATCHED`, se
-  reporta en `skipped` (no aborta el resto del batch, a diferencia de la subida de CVs). Si es
-  elegible, transiciona `MATCHED → SELECTED_FOR_PROFILING → PROFILING_QUEUED` (dos saltos de la
-  máquina de estados en la misma request) y encola `start_profiling_call.delay(...)`.
+- Por cada id elegible (`MATCHED`, `PROFILING_FAILED` o un caso `ATTENTION` sin corrida activa),
+  bloquea el candidato y busca una corrida activa. Si ya existe, responde en `skipped` con su
+  `run_id`; si no existe, **crea y confirma la corrida antes de publicar**.
+- La corrida nace `PENDING` cuando falta consentimiento de WhatsApp, o `QUEUED` cuando ya fue
+  aceptado/no aplica WhatsApp. Celery siempre recibe `run_id`, nunca `process_candidate_id`.
 - **RB-005 (máx. llamadas concurrentes) y RB-010 (presupuesto) no se validan en este endpoint** —
   se validan dentro de `InitiateProfilingCallUseCase`, que corre *dentro* de la tarea Celery
   `start_profiling_call`, no en el request HTTP. Es decir, este endpoint puede devolver `200` con
   candidatos "queued" que luego fallan silenciosamente en background si se supera el límite de
   concurrencia o el presupuesto — el frontend no se entera por esta respuesta, tiene que hacer
   polling de `GET .../profiling/runs` para ver el estado real.
-- 200: `{ process_id, queued: int, tasks: [{ process_candidate_id, task_id }], skipped: [{
-  process_candidate_id, reason }] }`.
+- 200: `{ process_id, queued: int, tasks: [{ process_candidate_id, run_id, task_id }], skipped: [{
+  process_candidate_id, run_id?, reason }] }`.
+
+### `GET /api/v1/processes/{process_id}/pipeline` — proyección del proceso
+- Auth: RequireRecruiter; un recruiter solo ve sus procesos.
+- Una tarjeta por candidato con `board_column`, `state_label`, estados crudos, consentimiento,
+  última corrida, proceso, recruiter, `effective_updated_at` y `consistency` (`OK|ATTENTION`).
+- Columnas: `CV_MATCH`, `QUEUED`, `CALLING`, `COMPLETED`, `FAILED`.
+
+### `GET /api/v1/profiling/board?timeframe=today|7days|month|all` — kanban global
+- Global exclusivo de profiling y filtrado por recruiter. Devuelve una tarjeta por candidato.
+- `QUEUED` y `CALLING` siempre se incluyen; el rango solo filtra terminales.
+
+### `GET /api/v1/profiling/candidates/{process_candidate_id}/runs` — historial
+- Todos los intentos del candidato, descendente por fecha; conserva `/profiling/runs` como
+  historial técnico y no como fuente del kanban.
 
 ### `GET /api/v1/processes/{process_id}/profiling/runs` — runs de un proceso
 - Auth: cualquier usuario autenticado (**sin filtro de dueño** — cualquiera con rol suficiente ve
@@ -578,12 +593,13 @@ y `global_router` bajo `/profiling/...` (vista global, cross-proceso).
   normalized_answer, evaluation_result, confidence_score (float|null), requires_review }] }`,
   orden por `question.order_index`.
 
-### `POST /api/v1/profiling/runs/{run_id}/cancel` — cancelar una llamada en cola
+### `POST /api/v1/profiling/runs/{run_id}/cancel` — cancelar una corrida pendiente
 - Auth: RequireRecruiter.
-- 404 si no existe. 422 si `run.status != QUEUED` (solo se pueden cancelar llamadas que **aún no
-  empezaron** — no hay forma de cancelar una llamada `CALLING`/`ANSWERED` en curso vía API).
-- Efecto: `ProfilingRunStatus.FAILED` + transiciona el `ProcessCandidate` a `PROFILING_FAILED`.
-- 200: `{ message: "Llamada cancelada correctamente" }`.
+- 404 si no existe. Acepta `PENDING`, `QUEUED` o `RETRY_PENDING`; una llamada
+  `CALLING`/`ANSWERED` no se cancela desde esta ruta.
+- Efecto: transición técnica a `CANCELLED` y alineación del candidato/proceso en la misma
+  transacción.
+- 200: `{ message, run_id }`.
 
 ### `PATCH /api/v1/profiling/runs/{run_id}/override` — sobrescribir evaluación de un run
 - Auth: RequireRecruiter.

@@ -1,4 +1,4 @@
-﻿import uuid
+import uuid
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -11,11 +11,13 @@ from src.infrastructure.db.models import AIFeedback, ProcessCandidate, User
 
 router = APIRouter(prefix="/feedback", tags=["AI Feedback"])
 
+
 class CreateFeedbackRequest(BaseModel):
     process_candidate_id: uuid.UUID
     context: str = Field(..., description="MATCH o PROFILING")
     evaluation: str = Field(..., description="CORRECT, PARTIAL, INCORRECT")
     notes: str | None = None
+
 
 @router.post("")
 async def create_feedback(
@@ -32,7 +34,7 @@ async def create_feedback(
         context=body.context,
         evaluation=body.evaluation,
         notes=body.notes,
-        created_by=current_user.id
+        created_by=current_user.id,
     )
     db.add(feedback)
     await db.commit()

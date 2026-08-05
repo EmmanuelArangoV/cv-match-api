@@ -154,7 +154,9 @@ def _get_embedding(text: str, client: OpenAI) -> list[float]:
     return response.data[0].embedding
 
 
-def _call_openai(content_blocks: list[dict], client: OpenAI, prompt: str, model: str) -> tuple[dict, int, int]:
+def _call_openai(
+    content_blocks: list[dict], client: OpenAI, prompt: str, model: str
+) -> tuple[dict, int, int]:
     content: list[dict] = [{"type": "text", "text": prompt}]
     content.extend(content_blocks)
 
@@ -245,12 +247,18 @@ def parse_cv(
                 get_active_ai_model_sync,
                 get_active_ai_prompt_sync,
             )
+
             prompt = get_active_ai_prompt_sync(db, "CV_EXTRACTION", CV_EXTRACTION_PROMPT)
             prompt = _build_extraction_prompt(prompt, pc.analysis_context)
             model = get_active_ai_model_sync(db, "CV_EXTRACTION", "OPENAI", "gpt-4o")
-            extracted, tokens_in, tokens_out = _call_openai(content_blocks, openai_client, prompt, model)
+            extracted, tokens_in, tokens_out = _call_openai(
+                content_blocks, openai_client, prompt, model
+            )
 
-            # Deduplicación por correo
+            # Deduplicación por correo. Desde este punto, `candidate` puede ser
+            # el registro existente al que se reasignó el ProcessCandidate; todas
+            # las escrituras posteriores deben usar ese ID efectivo, no el ID
+            # temporal recibido por la tarea.
             ext_email = extracted.get("email")
             if ext_email and "@placeholder" in candidate.email:
                 existing = db.query(Candidate).filter(Candidate.email == ext_email).first()
@@ -308,7 +316,10 @@ def parse_cv(
             estimated_cost = (tokens_in * _INPUT_COST) + (tokens_out * _OUTPUT_COST)
             cost_log = CostLog(
                 process_id=proc_uuid,
-                candidate_id=cand_uuid,
+                # Si la deduplicación reasignó el proceso, `cand_uuid` ya no
+                # existe y viola la FK de cost_logs. `candidate.id` siempre es
+                # el candidato efectivo que conserva el perfil.
+                candidate_id=candidate.id,
                 operation_type=OperationType.CV_EXTRACTION.value,
                 model_used=model,
                 tokens_input=tokens_in,
@@ -319,7 +330,7 @@ def parse_cv(
             db.commit()
 
             return {
-                "candidate_id": candidate_id,
+                "candidate_id": str(candidate.id),
                 "status": CandidateStatus.MATCH_PENDING.value,
                 "tokens_in": tokens_in,
                 "tokens_out": tokens_out,

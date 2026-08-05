@@ -1,4 +1,4 @@
-﻿import uuid
+import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,10 +15,10 @@ def record_audit(
     new_value: dict | None = None,
     ip_address: str | None = None,
 ) -> None:
-    '''
+    """
     Registra una accion de auditoria en la tabla AuditLog.
     La insercion no hace commit automatico; depende del commit de la transaccion actual.
-    '''
+    """
     log = AuditLog(
         user_id=user_id,
         action=action,

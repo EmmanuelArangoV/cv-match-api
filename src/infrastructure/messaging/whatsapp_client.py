@@ -60,7 +60,7 @@ class WhatsAppClient:
             return response.json()
 
     async def send_text_message(self, to_phone: str, message: str) -> dict:
-        """Envía texto libre (válido dentro de la ventana de 24h después de que el candidato escribió)."""
+        """Envía texto libre dentro de la ventana de 24h."""
         payload = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",

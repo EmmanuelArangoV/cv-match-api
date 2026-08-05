@@ -30,11 +30,11 @@ logger = logging.getLogger(__name__)
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60, name="start_profiling_call")
-def start_profiling_call(self, process_candidate_id: str):
+def start_profiling_call(self, profiling_run_id: str):
     """Inicia una llamada saliente de profiling hacia el candidato (Twilio + ElevenLabs)."""
     with _SyncSession() as db:
         try:
-            profiling_run = InitiateProfilingCallUseCase(db).execute(process_candidate_id)
+            profiling_run = InitiateProfilingCallUseCase(db).execute(profiling_run_id)
             db.commit()
             return {
                 "status": profiling_run.status,
@@ -44,12 +44,13 @@ def start_profiling_call(self, process_candidate_id: str):
         except (BusinessRuleException, NotFoundException, DomainException) as exc:
             # Errores de negocio: no son transitorios, no tiene sentido reintentar.
             db.rollback()
-            logger.warning(f"[profiling] no se inicio llamada para {process_candidate_id}: {exc}")
+            logger.warning(f"[profiling] no se inicio llamada para {profiling_run_id}: {exc}")
             return {"error": str(exc)}
         except Exception as exc:
             db.rollback()
             logger.error(f"[profiling] error transitorio iniciando llamada: {exc}")
             from src.infrastructure.cache.redis_client import get_global_setting_sync
+
             max_retries = int(
                 get_global_setting_sync(db, "max_call_attempts", str(settings.max_call_attempts))
             )
@@ -63,6 +64,8 @@ def retry_or_fail_profiling_call(self, profiling_run_id: str, reason: str):
         try:
             run = RetryOrFailProfilingCallUseCase(db).execute(profiling_run_id, reason)
             db.commit()
+            if run.status == "QUEUED":
+                start_profiling_call.delay(str(run.id))
             return {"status": run.status, "call_attempts": run.call_attempts}
         except (BusinessRuleException, NotFoundException, DomainException) as exc:
             db.rollback()
@@ -72,6 +75,7 @@ def retry_or_fail_profiling_call(self, profiling_run_id: str, reason: str):
             db.rollback()
             logger.error(f"[profiling] error transitorio reintentando llamada: {exc}")
             from src.infrastructure.cache.redis_client import get_global_setting_sync
+
             max_retries = int(
                 get_global_setting_sync(db, "max_call_attempts", str(settings.max_call_attempts))
             )
@@ -136,6 +140,7 @@ def check_stale_profiling_calls(self):
             db.rollback()
             logger.error(f"[watchdog] error revisando llamadas atascadas: {exc}")
             from src.infrastructure.cache.redis_client import get_global_setting_sync
+
             max_retries = int(
                 get_global_setting_sync(db, "max_call_attempts", str(settings.max_call_attempts))
             )
@@ -179,6 +184,7 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
                 get_active_ai_model_sync,
                 get_active_ai_prompt_sync,
             )
+
             sys_prompt = get_active_ai_prompt_sync(
                 db, "VOICE_PROFILING", PROFILING_EVALUATION_PROMPT
             )
@@ -275,6 +281,7 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
                 check_and_notify_budget_sync,
                 create_notification_sync,
             )
+
             if pc:
                 create_notification_sync(
                     db,
@@ -297,6 +304,7 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
             db.rollback()
             logger.error(f"[profiling] error evaluando transcripcion: {exc}")
             from src.infrastructure.cache.redis_client import get_global_setting_sync
+
             max_retries = int(
                 get_global_setting_sync(db, "max_call_attempts", str(settings.max_call_attempts))
             )
