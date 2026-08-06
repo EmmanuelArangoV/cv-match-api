@@ -352,8 +352,14 @@ async def update_process_question_set(
         raise NotFoundException("Set de preguntas no encontrado")
 
     cloned = await _clone_question_set(question_set, db)
-    process.question_set_id = cloned.id
+    # sync_process_status ANTES de mutar process: internamente accede a
+    # process.updated_at/created_at desde una función sync (build_process_progress).
+    # Si ya hay un cambio pendiente en `process` (onupdate=func.now() en updated_at),
+    # el autoflush de la siguiente query expira ese atributo y el acceso sync explota
+    # con sqlalchemy.exc.MissingGreenlet. Mutar después de sincronizar evita el autoflush
+    # a mitad de sync_process_status.
     await sync_process_status(db, process_id)
+    process.question_set_id = cloned.id
     await db.commit()
 
     return {
