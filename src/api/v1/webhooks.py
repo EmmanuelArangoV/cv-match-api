@@ -413,6 +413,11 @@ async def elevenlabs_post_call_webhook(
     dynamic_variables = client_data.get("dynamic_variables", {}) or {}
     twilio_call_sid = dynamic_variables.get("twilio_call_sid")
 
+    if not twilio_call_sid:
+        metadata = data.get("metadata", {}) or {}
+        phone_call = metadata.get("phone_call", {}) or {}
+        twilio_call_sid = phone_call.get("call_sid") or metadata.get("call_sid")
+
     profiling_run = None
     if twilio_call_sid:
         result = await db.execute(
