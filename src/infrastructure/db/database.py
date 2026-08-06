@@ -9,6 +9,9 @@ from src.config import settings
 engine = create_async_engine(
     settings.database_url,
     echo=settings.app_env == "development",
+    pool_size=5,
+    max_overflow=5,
+    pool_recycle=300,
     pool_pre_ping=True,
     connect_args={"statement_cache_size": 0, "prepared_statement_cache_size": 0},
 )
@@ -22,6 +25,9 @@ AsyncSessionFactory = async_sessionmaker(
 sync_engine = create_engine(
     settings.database_url_sync,
     echo=settings.app_env == "development",
+    pool_size=5,
+    max_overflow=5,
+    pool_recycle=300,
     pool_pre_ping=True,
 )
 
