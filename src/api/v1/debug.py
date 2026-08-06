@@ -81,7 +81,10 @@ async def seed_whatsapp_test(
     process = HiringProcess(
         id=uuid.uuid4(),
         recruiter_id=recruiter.id,
+        name=body.job_title,
         job_title=body.job_title,
+        area="Tecnología",
+        seniority="Mid",
         status=ProcessStatus.CVS_UPLOADED,
     )
     db.add(process)
@@ -95,6 +98,7 @@ async def seed_whatsapp_test(
         name=name_parts[0],
         last_name=name_parts[1] if len(name_parts) > 1 else "",
         phone=body.phone,
+        cv_file_url="debug-seed://sin-cv",
     )
     db.add(candidate)
     await db.flush()

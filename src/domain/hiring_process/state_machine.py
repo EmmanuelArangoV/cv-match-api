@@ -2,40 +2,49 @@ from src.domain.shared.exceptions import BusinessRuleException
 from src.infrastructure.db.models import ProcessStatus
 
 # Transiciones válidas: estado_actual → set de estados destino permitidos
+# ARCHIVED se permite directamente desde cualquier estado no terminal (además de desde CLOSED):
+# "Archivar proceso" es una acción administrativa que no exige pasar primero por "Cerrar".
 _TRANSITIONS: dict[ProcessStatus, set[ProcessStatus]] = {
     ProcessStatus.DRAFT: {
         ProcessStatus.CVS_UPLOADED,
         ProcessStatus.CLOSED,
+        ProcessStatus.ARCHIVED,
     },
     ProcessStatus.CVS_UPLOADED: {
         ProcessStatus.MATCH_PROCESSING,
         ProcessStatus.CVS_UPLOADED,  # cargar más CVs
         ProcessStatus.CLOSED,
+        ProcessStatus.ARCHIVED,
     },
     ProcessStatus.MATCH_PROCESSING: {
         ProcessStatus.MATCH_DONE,
         ProcessStatus.CLOSED,
+        ProcessStatus.ARCHIVED,
     },
     ProcessStatus.MATCH_DONE: {
         ProcessStatus.PROFILING_CONFIGURED,
         ProcessStatus.MATCH_PROCESSING,  # reprocesar con nuevo JD
         ProcessStatus.CVS_UPLOADED,  # cargar más CVs
         ProcessStatus.CLOSED,
+        ProcessStatus.ARCHIVED,
     },
     ProcessStatus.PROFILING_CONFIGURED: {
         ProcessStatus.PROFILING_ACTIVE,
         ProcessStatus.MATCH_PROCESSING,  # cambió el JD
         ProcessStatus.CVS_UPLOADED,  # cargar más CVs
         ProcessStatus.CLOSED,
+        ProcessStatus.ARCHIVED,
     },
     ProcessStatus.PROFILING_ACTIVE: {
         ProcessStatus.PROFILING_COMPLETED,
         ProcessStatus.PROFILING_CONFIGURED,  # se canceló el profiling
         ProcessStatus.CLOSED,
+        ProcessStatus.ARCHIVED,
     },
     ProcessStatus.PROFILING_COMPLETED: {
         ProcessStatus.CLOSED,
         ProcessStatus.PROFILING_ACTIVE,  # iniciar profiling adicional
+        ProcessStatus.ARCHIVED,
     },
     ProcessStatus.CLOSED: {
         ProcessStatus.ARCHIVED,
