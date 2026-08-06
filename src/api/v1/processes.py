@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import io
 import uuid
@@ -237,9 +238,11 @@ async def list_processes(
 
     # El estado listado es una proyección del pipeline real. Se sincroniza aquí para
     # reparar procesos que no hayan recibido un evento desde una ejecución antigua.
-    progress_by_process: dict[uuid.UUID, dict] = {}
-    for process in processes:
-        progress_by_process[process.id] = (await sync_process_status(db, process.id)).as_dict()
+    if processes:
+        sync_results = await asyncio.gather(*[sync_process_status(db, p.id) for p in processes])
+        progress_by_process = {p.id: res.as_dict() for p, res in zip(processes, sync_results)}
+    else:
+        progress_by_process = {}
     await db.commit()
 
     return {
