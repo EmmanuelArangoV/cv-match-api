@@ -145,7 +145,6 @@ async def receive_whatsapp_message(
 
 _TWIML_HANGUP = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
 _MACHINE_ANSWERED_BY = {
-    "machine_start",
     "machine_end_beep",
     "machine_end_silence",
     "machine_end_other",
