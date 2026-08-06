@@ -46,9 +46,13 @@ class WhatsAppClient:
                 ],
             }
 
+        import re
+        digits_only = re.sub(r"\D", "", to_phone)
+        formatted_phone = f"+{digits_only}" if digits_only else to_phone
+
         payload = {
             "messaging_product": "whatsapp",
-            "to": to_phone,
+            "to": formatted_phone,
             "type": "template",
             "template": template,
         }

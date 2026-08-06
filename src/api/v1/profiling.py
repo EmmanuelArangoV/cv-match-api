@@ -148,6 +148,13 @@ async def trigger_profiling(
             .with_for_update()
         )
         if active_run:
+            if active_run.status == ProfilingRunStatus.PENDING.value:
+                try:
+                    send_whatsapp_consent.delay(str(active_run.id))
+                    created_runs.append(active_run)
+                    continue
+                except Exception:
+                    pass
             skipped.append(
                 {
                     "process_candidate_id": str(pc.id),
