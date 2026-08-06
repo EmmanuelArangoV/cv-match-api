@@ -167,6 +167,7 @@ async def list_candidates(
             "whatsapp_consent": pc.whatsapp_consent_status,
             "normalized_cv_url": pc.candidate.normalized_cv_url,
             "total_cost": round(cost_by_candidate.get(pc.candidate_id, 0.0), 6),
+            "availability_preference": pc.availability_preference,
         }
         # Profile fields from normalized CV
         profile = pc.candidate.normalized_cv or {}
@@ -225,6 +226,7 @@ async def get_candidate_detail(
         },
         "status": pc.status,
         "whatsapp_consent": pc.whatsapp_consent_status,
+        "availability_preference": pc.availability_preference,
         "analysis_context": pc.analysis_context,
         "human_notes": pc.human_notes,
         "human_override_match": float(pc.human_override_match) if pc.human_override_match else None,
