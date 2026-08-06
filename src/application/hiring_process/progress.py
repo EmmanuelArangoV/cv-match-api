@@ -149,7 +149,7 @@ class CandidatePipelineProjection:
             "board_column": self.board_column,
             "state_label": self.state_label,
             "candidate_status": str(pc.status),
-            "whatsapp_consent_status": str(pc.whatsapp_consent_status),
+            "whatsapp_consent_status": pc.effective_whatsapp_consent_status,
             "latest_run": (
                 {
                     "id": str(run.id),
