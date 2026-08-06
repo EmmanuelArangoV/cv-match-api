@@ -35,8 +35,9 @@ def create_outbound_call(to_phone: str, run_id: str) -> str:
         url=f"{base_url}/api/v1/webhooks/twilio/twiml?run_id={run_id}",
         status_callback=f"{base_url}/api/v1/webhooks/twilio/status?run_id={run_id}",
         status_callback_event=["completed"],
-        machine_detection="Enable",
-        machine_detection_timeout=settings.machine_detection_timeout,
+        # AMD desactivado temporalmente para conexion instantanea sin analisis de voz
+        # machine_detection="Enable",
+        # machine_detection_timeout=settings.machine_detection_timeout,
         timeout=settings.twilio_ring_timeout_seconds,
     )
     logger.info(f"[twilio] llamada saliente creada sid={call.sid} run_id={run_id}")
