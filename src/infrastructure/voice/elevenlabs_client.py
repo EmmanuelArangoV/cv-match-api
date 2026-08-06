@@ -32,7 +32,20 @@ _client: ElevenLabs | None = None
 # lo ignora en silencio: ElevenLabs cierra el websocket (code 1008) y la conversacion
 # entera muere sin audio — de ahi que valga la pena cachear esto (TTL corto) en vez de
 # confiar en que la config nunca cambia, pero sin pagar una consulta extra por llamada.
-_ALLOWED_OVERRIDES_TTL_SECONDS = 300
+_ALLOWED_OVERRIDES_TTL_SECONDS = 3600
+
+# Fallback seguro con la configuración permitida por el agente en la pestaña Seguridad
+_DEFAULT_ALLOWED_OVERRIDES: dict[str, bool] = {
+    "first_message": True,
+    "language": False,
+    "prompt": True,
+    "llm": True,
+    "voice_id": True,
+    "stability": False,
+    "speed": True,
+    "similarity_boost": False,
+}
+
 _allowed_overrides_cache: dict[str, tuple[float, dict[str, bool]]] = {}
 
 
@@ -42,16 +55,7 @@ def _get_allowed_overrides(agent_id: str) -> dict[str, bool]:
     if cached and now - cached[0] < _ALLOWED_OVERRIDES_TTL_SECONDS:
         return cached[1]
 
-    allowed = {
-        "first_message": False,
-        "language": False,
-        "prompt": False,
-        "llm": False,
-        "voice_id": False,
-        "stability": False,
-        "speed": False,
-        "similarity_boost": False,
-    }
+    allowed = dict(_DEFAULT_ALLOWED_OVERRIDES)
     try:
         agent = get_elevenlabs_client().conversational_ai.agents.get(agent_id=agent_id)
         ov = (
@@ -72,10 +76,10 @@ def _get_allowed_overrides(agent_id: str) -> dict[str, bool]:
                 allowed["speed"] = bool(ov.tts.speed)
                 allowed["similarity_boost"] = bool(ov.tts.similarity_boost)
     except Exception as exc:
-        # Fail-closed: si no podemos confirmar que un override esta permitido, no lo
-        # mandamos — es preferible una llamada con la config por defecto del agente
-        # a una que ElevenLabs rechaza de plano.
-        logger.error(f"[elevenlabs] no se pudo leer overrides permitidos de {agent_id}: {exc}")
+        logger.warning(
+            f"[elevenlabs] no se pudo actualizar overrides permitidos de {agent_id} ({exc}), "
+            "usando fallback por defecto."
+        )
 
     _allowed_overrides_cache[agent_id] = (now, allowed)
     return allowed
