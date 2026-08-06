@@ -302,6 +302,7 @@ async def get_process(
         "question_set_id": str(process.question_set_id) if process.question_set_id else None,
         "voice_override_system_prompt": process.voice_override_system_prompt,
         "voice_override_first_message": process.voice_override_first_message,
+        "voice_override_language": process.voice_override_language,
         "job_description": {
             "jd_id": str(active_jd.id),
             "version": active_jd.version,
