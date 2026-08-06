@@ -220,7 +220,7 @@ async def list_global_settings(
 
 
 class UpdateGlobalSettingRequest(BaseModel):
-    setting_value: dict
+    setting_value: dict | int
 
 
 @router.patch("/global-settings/{setting_key}")
@@ -232,12 +232,22 @@ async def update_global_setting(
 ) -> dict:
     """Upsert: crea la fila si `setting_key` no existe todavía (no hay seed de datos)."""
     if setting_key == "match_thresholds":
+        if not isinstance(body.setting_value, dict):
+            raise BusinessRuleException("match_thresholds debe ser un objeto {high, medium, low}.")
         MatchThresholds.from_dict(body.setting_value)  # valida 0 <= low <= medium <= high <= 100
     if setting_key == "platform_total_budget":
+        if not isinstance(body.setting_value, dict):
+            raise BusinessRuleException("platform_total_budget debe ser un objeto {amount}.")
         amount = body.setting_value.get("amount")
         if isinstance(amount, bool) or not isinstance(amount, (int, float)) or amount < 0:
             raise BusinessRuleException(
                 "El presupuesto total debe ser un número mayor o igual a cero."
+            )
+    if setting_key == "max_call_attempts":
+        value = body.setting_value
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > 10:
+            raise BusinessRuleException(
+                "El número de intentos de llamada debe ser un entero entre 1 y 10."
             )
 
     result = await db.execute(
