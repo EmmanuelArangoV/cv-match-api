@@ -519,7 +519,9 @@ async def get_profiling_run_audio(
 
     def _fetch_audio() -> bytes:
         client = get_elevenlabs_client()
-        chunks = client.conversational_ai.conversations.audio.get(run.elevenlabs_conversation_id)
+        chunks = client.conversational_ai.conversations.audio.get(
+            conversation_id=run.elevenlabs_conversation_id
+        )
         return b"".join(chunks)
 
     try:
