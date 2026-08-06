@@ -318,10 +318,15 @@ async def list_all_profiling_runs(
 @global_router.get("/board")
 async def get_profiling_board(
     timeframe: str = "today",
+    process_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Tablero global: una tarjeta por candidato, no una tarjeta por intento."""
+    """Tablero global: una tarjeta por candidato, no una tarjeta por intento.
+
+    `process_id` filtra a un solo proceso; si el caller es RECRUITER, el filtro por
+    dueño de abajo ya lo limita a los suyos aunque pase el id de un proceso ajeno
+    (la query simplemente no devuelve nada, sin necesitar una validación aparte)."""
 
     query = (
         select(ProcessCandidate)
@@ -334,6 +339,8 @@ async def get_profiling_board(
     )
     if current_user.role == UserRole.RECRUITER.value:
         query = query.where(HiringProcess.recruiter_id == current_user.id)
+    if process_id is not None:
+        query = query.where(ProcessCandidate.process_id == process_id)
 
     candidates = list((await db.execute(query)).scalars().all())
     # El global es exclusivamente de profiling. Una corrida historica basta para
