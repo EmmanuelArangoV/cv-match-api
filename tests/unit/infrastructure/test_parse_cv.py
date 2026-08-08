@@ -1,8 +1,23 @@
 import importlib
 import uuid
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from src.infrastructure.db.models import Candidate, CandidateStatus, ProcessCandidate
+
+
+def test_get_embedding_does_not_require_provider_response_id() -> None:
+    module = importlib.import_module("src.infrastructure.workers.tasks.parse_cv")
+    client = MagicMock()
+    client.embeddings.create.return_value = SimpleNamespace(
+        data=[SimpleNamespace(embedding=[0.1, 0.2])],
+        usage=SimpleNamespace(prompt_tokens=7),
+    )
+
+    embedding, tokens = module._get_embedding("perfil", client)
+
+    assert embedding == [0.1, 0.2]
+    assert tokens == 7
 
 
 class _Query:
@@ -22,6 +37,7 @@ class _Session:
         self.process_candidate = process_candidate
         self.added: list[object] = []
         self.deleted: list[object] = []
+        self.events: list[str] = []
 
     def __enter__(self) -> "_Session":
         return self
@@ -32,7 +48,9 @@ class _Session:
     def get(self, model: type, identifier: uuid.UUID) -> object:
         if model is Candidate:
             return self.original
-        return self.process_candidate
+        if model is ProcessCandidate:
+            return self.process_candidate
+        return None
 
     def query(self, model: type) -> _Query:
         return _Query(self.existing)
@@ -47,7 +65,7 @@ class _Session:
         self.added.append(value)
 
     def commit(self) -> None:
-        return None
+        self.events.append("commit")
 
     def rollback(self) -> None:
         return None
@@ -83,6 +101,20 @@ def test_parse_cv_registers_cost_against_deduplicated_candidate() -> None:
     session = _Session(original, process_candidate)
     session.existing = existing
 
+    def _openai_result(*args: object, **kwargs: object) -> tuple[dict, int, int, int, str]:
+        session.events.append("openai")
+        return (
+            {"email": existing.email, "full_name": "Candidato Existente"},
+            1,
+            1,
+            0,
+            "chatcmpl-test",
+        )
+
+    def _record_cost(*args: object, **kwargs: object) -> bool:
+        session.events.append("cost")
+        return True
+
     with (
         patch.object(module, "_SyncSession", return_value=session),
         patch.object(module, "download_file_sync", return_value=b"pdf"),
@@ -91,9 +123,10 @@ def test_parse_cv_registers_cost_against_deduplicated_candidate() -> None:
         patch.object(
             module,
             "_call_openai",
-            return_value=({"email": existing.email, "full_name": "Candidato Existente"}, 1, 1),
+            side_effect=_openai_result,
         ),
-        patch.object(module, "_get_embedding", return_value=[0.0]),
+        patch.object(module, "_get_embedding", side_effect=RuntimeError("sin embedding")),
+        patch.object(module, "record_cost_sync", side_effect=_record_cost) as record_cost,
         patch.object(module, "render_normalized_cv", return_value=b"normalized"),
         patch.object(module, "upload_file_sync", return_value="cvs/existing_normalized.pdf"),
         patch.object(module, "sync_process_status_sync"),
@@ -112,7 +145,9 @@ def test_parse_cv_registers_cost_against_deduplicated_candidate() -> None:
             str(process_id),
         )
 
-    cost_log = session.added[0]
     assert result["candidate_id"] == str(existing_id)
-    assert cost_log.candidate_id == existing_id
+    assert record_cost.call_args.kwargs["candidate_id"] == existing_id
     assert process_candidate.candidate_id == existing_id
+    openai_index = session.events.index("openai")
+    cost_index = session.events.index("cost")
+    assert "commit" in session.events[openai_index + 1 : cost_index]

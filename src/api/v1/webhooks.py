@@ -2,7 +2,6 @@ import asyncio
 import hashlib
 import hmac
 import logging
-import math
 import uuid
 from functools import partial
 from typing import Any
@@ -23,11 +22,16 @@ from src.application.profiling.lifecycle import transition_profiling_async
 from src.application.profiling.voice_config_resolver import resolve_voice_config
 from src.config import settings
 from src.domain.shared.exceptions import BusinessRuleException
+from src.infrastructure.costs import (
+    calculate_elevenlabs_cost,
+    calculate_twilio_cost,
+    extract_elevenlabs_llm_usage,
+    record_cost_async,
+)
 from src.infrastructure.db.database import AsyncSessionFactory, get_db
 from src.infrastructure.db.models import (
     AITaskType,
     Candidate,
-    CostLog,
     HiringProcess,
     OperationType,
     ProcessCandidate,
@@ -44,15 +48,6 @@ from src.infrastructure.workers.tasks.profiling import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
-
-# Créditos ElevenLabs -> USD, aproximado (400 créditos ~= 1 minuto en plan Creator).
-_ELEVENLABS_CREDITS_PER_USD_MINUTE = 400
-_ELEVENLABS_USD_PER_MINUTE_DEFAULT = 0.09
-
-# Tarifa aproximada de Twilio para llamadas salientes a móviles en Colombia (varía por
-# destino real — ajustar según la factura de Twilio si difiere significativamente).
-_TWILIO_USD_PER_MINUTE_DEFAULT = 0.15
-
 
 def _verify_meta_signature(payload: bytes, signature_header: str | None) -> bool:
     if not signature_header or not signature_header.startswith("sha256="):
@@ -151,6 +146,7 @@ async def receive_whatsapp_message(
 
 _TWIML_HANGUP = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
 _MACHINE_ANSWERED_BY = {
+    "machine_start",
     "machine_end_beep",
     "machine_end_silence",
     "machine_end_other",
@@ -194,7 +190,8 @@ async def _mark_cached_call_answered(run_id: str, answered_by: str | None) -> No
                 ProfilingRunStatus.VOICEMAIL_DETECTED.value,
             }:
                 return
-            profiling_run.amd_result = str(answered_by)
+            if answered_by:
+                profiling_run.amd_result = str(answered_by)
             if profiling_run.status == ProfilingRunStatus.CALLING.value:
                 pc = await db.get(ProcessCandidate, profiling_run.process_candidate_id)
                 if pc:
@@ -225,10 +222,9 @@ async def twilio_twiml_webhook(
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     """
-    Webhook que Twilio invoca tras Answering Machine Detection sincrono, pidiendo el
-    TwiML a responder. Si AMD detecto maquina -> cuelga y reintenta. Si contesto un
-    humano -> registra la llamada en ElevenLabs (register_call) inyectando el system
-    prompt/voz resueltos dinamicamente, y devuelve el TwiML que arma el propio SDK.
+    Webhook que Twilio invoca al conectar la llamada. Con AMD asíncrono no contiene
+    aún ``AnsweredBy``: el TwiML precargado se devuelve de inmediato y el resultado
+    llega después a ``/twilio/amd-status``.
     """
     form = await request.form()
     signature = request.headers.get("X-Twilio-Signature")
@@ -364,6 +360,38 @@ async def twilio_twiml_webhook(
     return Response(content=twiml, media_type="application/xml")
 
 
+@router.post("/twilio/amd-status")
+async def twilio_async_amd_webhook(
+    request: Request, run_id: str, db: AsyncSession = Depends(get_db)
+) -> dict[str, str]:
+    """Persiste el veredicto de AMD asíncrono y corta máquinas/fax."""
+    form = await request.form()
+    signature = request.headers.get("X-Twilio-Signature")
+    url = _build_twilio_webhook_url(request)
+    valid = await asyncio.to_thread(
+        partial(twilio_client.validate_twilio_signature, url, _form_to_str_dict(form), signature)
+    )
+    if not valid:
+        raise HTTPException(status_code=403, detail="Firma de Twilio invalida")
+
+    call_sid = str(form.get("CallSid", ""))
+    answered_by = str(form.get("AnsweredBy", "unknown"))
+    duration_ms = int(form.get("MachineDetectionDuration") or 0)
+    profiling_run = await _get_run_or_none(db, run_id)
+    if not profiling_run or profiling_run.twilio_call_sid != call_sid:
+        return {"status": "ignored"}
+
+    profiling_run.amd_result = answered_by
+    profiling_run.twilio_status_detail = f"amd:{answered_by}:{duration_ms}ms"
+    await db.commit()
+
+    if answered_by in _MACHINE_ANSWERED_BY:
+        await asyncio.to_thread(twilio_client.end_call, call_sid)
+        retry_or_fail_profiling_call.delay(str(profiling_run.id), f"AMD:{answered_by}")
+        return {"status": "terminated"}
+    return {"status": "ok"}
+
+
 @router.post("/twilio/status")
 async def twilio_status_webhook(
     request: Request, run_id: str, db: AsyncSession = Depends(get_db)
@@ -372,8 +400,8 @@ async def twilio_status_webhook(
     Dos cosas distintas en el mismo webhook:
     1. Captura llamadas que nunca llegaron a /twiml (no-answer/busy/failed/canceled) —
        la unica forma de saber que una llamada jamas conecto, ya que AMD no llega a correr.
-    2. Registra el costo real de Twilio (estimado por duracion) cuando la llamada se
-       completa — Twilio cobra por el tiempo de llamada sin importar si conecto un humano.
+    2. Registra el costo de Twilio cuando la llamada termina. Usa el precio de
+       conectividad del Call Resource y suma AMD/Media Stream según la tarifa pública.
     """
     form = await request.form()
     signature = request.headers.get("X-Twilio-Signature")
@@ -392,7 +420,17 @@ async def twilio_status_webhook(
         return {"status": "ignored"}
 
     if call_status == "completed" and profiling_run.twilio_call_sid == call_sid:
-        duration_s = int(form.get("CallDuration") or form.get("Duration") or 0)
+        form_duration_s = int(form.get("CallDuration") or form.get("Duration") or 0)
+        try:
+            billing = await asyncio.to_thread(twilio_client.fetch_call_billing, call_sid)
+            duration_s = billing.duration_s or form_duration_s
+            connectivity_cost = billing.connectivity_cost_usd
+            currency = billing.currency
+        except Exception:
+            logger.exception("[twilio][cost] no se pudo consultar Call Resource sid=%s", call_sid)
+            duration_s = form_duration_s
+            connectivity_cost = None
+            currency = "USD"
         if duration_s > 0:
             pc_result = await db.execute(
                 select(ProcessCandidate).where(
@@ -400,17 +438,38 @@ async def twilio_status_webhook(
                 )
             )
             pc = pc_result.scalar_one_or_none()
-            # Twilio factura por minuto completo, redondeando siempre hacia arriba.
-            billed_minutes = math.ceil(duration_s / 60)
-            db.add(
-                CostLog(
-                    process_id=pc.process_id if pc else None,
-                    candidate_id=pc.candidate_id if pc else None,
-                    operation_type=OperationType.TWILIO_CALL.value,
-                    model_used="twilio-voice",
-                    call_duration_s=duration_s,
-                    estimated_cost=round(billed_minutes * _TWILIO_USD_PER_MINUTE_DEFAULT, 6),
-                )
+            process = await db.get(HiringProcess, pc.process_id) if pc else None
+            amd_used = bool(profiling_run.amd_result)
+            media_stream_used = profiling_run.status in {
+                ProfilingRunStatus.ANSWERED.value,
+                ProfilingRunStatus.COMPLETED.value,
+            } or bool(profiling_run.elevenlabs_conversation_id) or (
+                settings.twilio_machine_detection_enabled
+                and settings.twilio_machine_detection_async
+            )
+            cost = calculate_twilio_cost(
+                duration_s,
+                connectivity_cost,
+                amd_used=amd_used,
+                media_stream_used=media_stream_used,
+            )
+            await record_cost_async(
+                db,
+                process_id=pc.process_id if pc else None,
+                candidate_id=pc.candidate_id if pc else None,
+                user_id=process.recruiter_id if process else None,
+                operation_type=OperationType.TWILIO_CALL.value,
+                provider="TWILIO",
+                model_used="twilio-voice+amd+media-stream",
+                call_duration_s=duration_s,
+                estimated_cost=cost.amount_usd,
+                currency=currency,
+                cost_source=cost.source,
+                external_reference=f"twilio:{call_sid}",
+                cost_breakdown={
+                    **cost.breakdown,
+                    "amd_result": profiling_run.amd_result,
+                },
             )
             await db.commit()
         return {"status": "ok"}
@@ -429,12 +488,6 @@ async def twilio_status_webhook(
     await db.commit()
     retry_or_fail_profiling_call.delay(str(profiling_run.id), f"status:{call_status}")
     return {"status": "ok"}
-
-
-def _estimate_elevenlabs_cost_usd(metadata: dict[str, Any]) -> float:
-    credits = metadata.get("cost", 0) or 0
-    usd_per_minute = _ELEVENLABS_USD_PER_MINUTE_DEFAULT
-    return round((credits / _ELEVENLABS_CREDITS_PER_USD_MINUTE) * usd_per_minute, 6)
 
 
 _TRANSCRIPT_SPEAKER_LABEL = {"agent": "Agente", "user": "Candidato"}
@@ -523,6 +576,14 @@ async def elevenlabs_post_call_webhook(
         )
         return {"status": "ignored", "reason": "run_terminal"}
 
+    if profiling_run.amd_result in _MACHINE_ANSWERED_BY:
+        logger.warning(
+            "[elevenlabs][post-call] conversación de máquina ignorada run=%s amd=%s",
+            profiling_run.id,
+            profiling_run.amd_result,
+        )
+        return {"status": "ignored", "reason": "amd_machine"}
+
     analysis = data.get("analysis", {}) or {}
     metadata = data.get("metadata", {}) or {}
     raw_transcript = (
@@ -569,15 +630,30 @@ async def elevenlabs_post_call_webhook(
         except BusinessRuleException as exc:
             logger.warning(f"[elevenlabs][post-call] transicion invalida para {pc.id}: {exc}")
 
-    db.add(
-        CostLog(
-            process_id=pc.process_id if pc else None,
-            candidate_id=pc.candidate_id if pc else None,
-            operation_type=OperationType.VOICE_CALL.value,
-            model_used="elevenlabs-conversational-ai",
-            call_duration_s=int(metadata.get("call_duration_secs", 0) or 0),
-            estimated_cost=_estimate_elevenlabs_cost_usd(metadata),
-        )
+    voice_cost = calculate_elevenlabs_cost(metadata)
+    input_tokens, output_tokens, cached_tokens, llm_models = extract_elevenlabs_llm_usage(
+        metadata
+    )
+    process = await db.get(HiringProcess, pc.process_id) if pc else None
+    await record_cost_async(
+        db,
+        process_id=pc.process_id if pc else None,
+        candidate_id=pc.candidate_id if pc else None,
+        user_id=process.recruiter_id if process else None,
+        operation_type=OperationType.VOICE_CALL.value,
+        provider="ELEVENLABS",
+        model_used=(
+            "elevenlabs-conversational-ai"
+            + (f":{','.join(llm_models)}" if llm_models else "")
+        ),
+        tokens_input=input_tokens,
+        tokens_cached=cached_tokens,
+        tokens_output=output_tokens,
+        call_duration_s=int(metadata.get("call_duration_secs", 0) or 0),
+        estimated_cost=voice_cost.amount_usd,
+        cost_source=voice_cost.source,
+        external_reference=f"elevenlabs:{conversation_id}",
+        cost_breakdown=voice_cost.breakdown,
     )
 
     await db.commit()

@@ -481,6 +481,8 @@ async def parse_job_description(
         job_title=process.job_title,
         area=process.area,
         seniority=process.seniority,
+        process_id=process.id,
+        user_id=current_user.id,
     )
 
 
@@ -747,15 +749,18 @@ async def get_process_metrics(
     cost_by_operation = {op: float(cost) for op, cost in by_op_result.all()}
 
     category_map: dict[str, list[str]] = {
+        "storage": [OperationType.CV_STORAGE.value],
         "voz": [OperationType.VOICE_CALL.value],
         "twilio": [OperationType.TWILIO_CALL.value],
         "whatsapp": [OperationType.WHATSAPP_MESSAGE.value],
         "llm": [
             OperationType.CV_EXTRACTION.value,
+            OperationType.CV_EMBEDDING.value,
             OperationType.CV_MATCH.value,
             OperationType.JD_ENHANCEMENT.value,
             OperationType.ANSWER_EVALUATION.value,
             OperationType.VOICE_TRANSCRIPTION.value,
+            OperationType.WHATSAPP_AI.value,
         ],
     }
     cost_by_category = {

@@ -10,6 +10,7 @@ de decidir aplicarlo y guardarlo.
 from __future__ import annotations
 
 import json
+import uuid
 
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +22,12 @@ from src.infrastructure.ai.prompts import (
     build_jd_analyze_enhance_messages,
 )
 from src.infrastructure.cache.redis_client import get_active_ai_model, get_active_ai_prompt
+from src.infrastructure.costs import (
+    calculate_openai_cost,
+    extract_openai_usage,
+    record_cost_async,
+)
+from src.infrastructure.db.models import OperationType
 
 
 class ParseJobDescriptionUseCase:
@@ -35,6 +42,8 @@ class ParseJobDescriptionUseCase:
         job_title: str,
         area: str,
         seniority: str,
+        process_id: uuid.UUID,
+        user_id: uuid.UUID,
     ) -> dict:
         # Prompt y modelo activos (configurables desde ajustes), con fallback al default de código
         system_prompt = await get_active_ai_prompt(
@@ -60,6 +69,25 @@ class ParseJobDescriptionUseCase:
             raise BusinessRuleException(
                 f"No se pudo analizar la Job Description con IA: {exc}"
             ) from exc
+
+        tokens_in, tokens_out, cached_tokens = extract_openai_usage(response)
+        cost = calculate_openai_cost(model, tokens_in, tokens_out, cached_tokens)
+        await record_cost_async(
+            db,
+            process_id=process_id,
+            user_id=user_id,
+            operation_type=OperationType.JD_ENHANCEMENT.value,
+            provider="OPENAI",
+            model_used=model,
+            tokens_input=tokens_in,
+            tokens_cached=cached_tokens,
+            tokens_output=tokens_out,
+            estimated_cost=cost.amount_usd,
+            cost_source=cost.source,
+            external_reference=f"openai:{response.id}",
+            cost_breakdown=cost.breakdown,
+        )
+        await db.commit()
 
         content = response.choices[0].message.content or "{}"
         try:

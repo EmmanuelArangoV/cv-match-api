@@ -243,11 +243,17 @@ async def get_candidate_detail(
         "costs": [
             {
                 "operation_type": log.operation_type,
+                "provider": log.provider,
                 "model_used": log.model_used,
                 "tokens_input": log.tokens_input,
+                "tokens_cached": log.tokens_cached,
                 "tokens_output": log.tokens_output,
                 "call_duration_s": log.call_duration_s,
                 "estimated_cost": float(log.estimated_cost),
+                "currency": log.currency,
+                "cost_source": log.cost_source,
+                "external_reference": log.external_reference,
+                "cost_breakdown": log.cost_breakdown,
                 "created_at": log.created_at.isoformat(),
             }
             for log in cost_logs

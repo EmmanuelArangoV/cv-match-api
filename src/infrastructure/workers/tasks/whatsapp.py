@@ -64,16 +64,27 @@ def send_whatsapp_consent(self, profiling_run_id: str) -> dict:
 
             pc.whatsapp_sent_at = datetime.now(UTC)
 
-            from src.infrastructure.db.models import CostLog, OperationType
+            from src.infrastructure.costs import (
+                calculate_meta_whatsapp_cost,
+                record_cost_sync,
+            )
+            from src.infrastructure.db.models import OperationType
 
-            cost_log = CostLog(
+            message_id = str(((res.get("messages") or [{}])[0]).get("id") or self.request.id)
+            message_cost = calculate_meta_whatsapp_cost(country="CO", category="utility")
+            record_cost_sync(
+                db,
                 process_id=process.id,
                 candidate_id=candidate.id,
+                user_id=process.recruiter_id,
                 operation_type=OperationType.WHATSAPP_MESSAGE.value,
-                model_used="meta-whatsapp-template",
-                estimated_cost=0.08,  # aprox cost per template
+                provider="META",
+                model_used="meta-whatsapp-template:utility",
+                estimated_cost=message_cost.amount_usd,
+                cost_source=message_cost.source,
+                external_reference=f"meta-whatsapp:{message_id}",
+                cost_breakdown=message_cost.breakdown,
             )
-            db.add(cost_log)
             db.commit()
 
             return {

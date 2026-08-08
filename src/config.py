@@ -31,13 +31,14 @@ class Settings(BaseSettings):
     # OpenAI
     openai_api_key: str = ""
 
-    # Twilio (llamadas de profiling — AMD sincrono + registro en ElevenLabs)
+    # Twilio (llamadas de profiling + registro en ElevenLabs)
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
     twilio_from_number: str = ""
     twilio_api_url: str = "https://api.twilio.com"
     twilio_validate_signature: bool = True
     twilio_machine_detection_enabled: bool = False
+    twilio_machine_detection_async: bool = False
 
     # ElevenLabs
     elevenlabs_api_key: str = ""

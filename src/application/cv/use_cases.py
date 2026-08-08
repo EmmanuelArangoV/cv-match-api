@@ -127,6 +127,7 @@ class UploadCVsUseCase:
             valid_files.append((file, ext, content))
 
         upload_tasks = []
+        upload_cost_items: list[tuple[uuid.UUID, str, int, str]] = []
         file_meta = []
         # Para deduplicar de forma síncrona/batch, pre-calculamos hashes
         for file, ext, content in valid_files:
@@ -192,6 +193,7 @@ class UploadCVsUseCase:
                 content_type = _CONTENT_TYPES.get(ext, "application/octet-stream")
 
                 upload_tasks.append(r2_client.upload_file(r2_key, content, content_type))
+                upload_cost_items.append((candidate_id, r2_key, len(content), file_hash))
 
                 filename_stem = filename.rsplit(".", 1)[0]
                 candidate = Candidate(
@@ -228,6 +230,31 @@ class UploadCVsUseCase:
 
         if upload_tasks:
             await asyncio.gather(*upload_tasks)
+            from src.infrastructure.costs import (
+                calculate_r2_cost,
+                record_cost_async,
+            )
+            from src.infrastructure.db.models import OperationType
+
+            for candidate_id, r2_key, size_bytes, file_hash in upload_cost_items:
+                storage_cost = calculate_r2_cost(
+                    bytes_stored=size_bytes,
+                    class_a_operations=1,
+                )
+                await record_cost_async(
+                    self._db,
+                    process_id=process_id,
+                    candidate_id=candidate_id,
+                    user_id=uploader_id,
+                    operation_type=OperationType.CV_STORAGE.value,
+                    provider="CLOUDFLARE_R2",
+                    model_used="r2-standard-original-cv",
+                    estimated_cost=storage_cost.amount_usd,
+                    cost_source=storage_cost.source,
+                    external_reference=f"r2-put:{r2_key}:{file_hash}",
+                    cost_breakdown={**storage_cost.breakdown, "object_key": r2_key},
+                )
+            await self._db.commit()
 
         return results
 

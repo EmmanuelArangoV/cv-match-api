@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import uuid
 import zipfile
 
@@ -21,15 +22,19 @@ from sqlalchemy.orm import sessionmaker
 from src.application.hiring_process.progress import sync_process_status_sync
 from src.config import settings
 from src.infrastructure.ai.prompts import CV_EXTRACTION_PROMPT
+from src.infrastructure.costs import (
+    calculate_openai_cost,
+    calculate_r2_cost,
+    extract_openai_usage,
+    record_cost_sync,
+)
 from src.infrastructure.cv.pdf_renderer import render_normalized_cv
 from src.infrastructure.storage.r2_client import download_file_sync, upload_file_sync
 from src.infrastructure.workers.celery_app import celery_app
 
 _engine = create_engine(settings.database_url_sync)
 _SyncSession = sessionmaker(bind=_engine)
-
-_INPUT_COST = 0.0000025
-_OUTPUT_COST = 0.000010
+logger = logging.getLogger(__name__)
 
 # Extensiones reconocidas como imágenes directas
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".tiff", ".tif", ".bmp"}
@@ -148,15 +153,18 @@ def _prepare_content(file_bytes: bytes, r2_key: str) -> list[dict]:
 # ─── Llamada a OpenAI ──────────────────────────────────────────────────────────
 
 
-def _get_embedding(text: str, client: OpenAI) -> list[float]:
+def _get_embedding(text: str, client: OpenAI) -> tuple[list[float], int]:
     """Genera un vector embedding para el texto dado."""
     response = client.embeddings.create(input=text, model="text-embedding-3-small")
-    return response.data[0].embedding
+    tokens_in = int(getattr(getattr(response, "usage", None), "prompt_tokens", 0) or 0)
+    # CreateEmbeddingResponse no incluye un id de proveedor. La referencia
+    # idempotente se construye en la tarea a partir del intento de Celery.
+    return response.data[0].embedding, tokens_in
 
 
 def _call_openai(
     content_blocks: list[dict], client: OpenAI, prompt: str, model: str
-) -> tuple[dict, int, int]:
+) -> tuple[dict, int, int, int, str]:
     content: list[dict] = [{"type": "text", "text": prompt}]
     content.extend(content_blocks)
 
@@ -168,7 +176,8 @@ def _call_openai(
     )
 
     result = json.loads(response.choices[0].message.content)
-    return result, response.usage.prompt_tokens, response.usage.completion_tokens
+    tokens_in, tokens_out, cached_tokens = extract_openai_usage(response)
+    return result, tokens_in, tokens_out, cached_tokens, str(response.id)
 
 
 def _build_extraction_prompt(prompt: str, analysis_context: str | None) -> str:
@@ -218,7 +227,7 @@ def parse_cv(
     from src.infrastructure.db.models import (
         Candidate,
         CandidateStatus,
-        CostLog,
+        HiringProcess,
         OperationType,
         ProcessCandidate,
     )
@@ -262,7 +271,7 @@ def parse_cv(
             prompt = get_active_ai_prompt_sync(db, "CV_EXTRACTION", CV_EXTRACTION_PROMPT)
             prompt = _build_extraction_prompt(prompt, pc.analysis_context)
             model = get_active_ai_model_sync(db, "CV_EXTRACTION", "OPENAI", "gpt-4o")
-            extracted, tokens_in, tokens_out = _call_openai(
+            extracted, tokens_in, tokens_out, cached_tokens, response_id = _call_openai(
                 content_blocks, openai_client, prompt, model
             )
 
@@ -285,6 +294,34 @@ def parse_cv(
                 else:
                     candidate.email = ext_email
 
+            process = db.get(HiringProcess, proc_uuid)
+            extraction_cost = calculate_openai_cost(
+                model, tokens_in, tokens_out, cached_tokens
+            )
+            # La deduplicación puede haber actualizado el candidato y conserva un lock
+            # incompatible con la FK de cost_logs. Confirmamos ese cambio antes de abrir
+            # la transacción independiente; así el costo facturado se conserva aunque
+            # falle el render/subida posterior, sin esperar al statement_timeout.
+            db.commit()
+            with _SyncSession() as cost_db:
+                record_cost_sync(
+                    cost_db,
+                    process_id=proc_uuid,
+                    candidate_id=candidate.id,
+                    user_id=process.recruiter_id if process else None,
+                    operation_type=OperationType.CV_EXTRACTION.value,
+                    provider="OPENAI",
+                    model_used=model,
+                    tokens_input=tokens_in,
+                    tokens_cached=cached_tokens,
+                    tokens_output=tokens_out,
+                    estimated_cost=extraction_cost.amount_usd,
+                    cost_source=extraction_cost.source,
+                    external_reference=f"openai:{response_id}",
+                    cost_breakdown=extraction_cost.breakdown,
+                )
+                cost_db.commit()
+
             # Actualizar candidato con datos extraídos
             candidate.extracted_profile = extracted
             candidate.normalized_cv = extracted
@@ -292,9 +329,44 @@ def parse_cv(
             # Generar Embedding para búsqueda semántica
             try:
                 profile_text = json.dumps(extracted, ensure_ascii=False)
-                candidate.cv_embedding = _get_embedding(profile_text, openai_client)
-            except Exception:
-                pass  # Si falla el embedding, continuamos con el flujo normal
+                embedding, embedding_tokens = _get_embedding(profile_text, openai_client)
+                candidate.cv_embedding = embedding
+                embedding_cost = calculate_openai_cost(
+                    "text-embedding-3-small", embedding_tokens
+                )
+                task_reference = self.request.id or str(uuid.uuid4())
+                retry_number = int(getattr(self.request, "retries", 0) or 0)
+                with _SyncSession() as cost_db:
+                    record_cost_sync(
+                        cost_db,
+                        process_id=proc_uuid,
+                        candidate_id=candidate.id,
+                        user_id=process.recruiter_id if process else None,
+                        operation_type=OperationType.CV_EMBEDDING.value,
+                        provider="OPENAI",
+                        model_used="text-embedding-3-small",
+                        tokens_input=embedding_tokens,
+                        estimated_cost=embedding_cost.amount_usd,
+                        cost_source="openai_rate_card_no_provider_id",
+                        external_reference=(
+                            f"openai-embedding:{task_reference}:{retry_number}"
+                        ),
+                        cost_breakdown={
+                            **embedding_cost.breakdown,
+                            "provider_reference_available": False,
+                            "task_reference": task_reference,
+                            "retry_number": retry_number,
+                        },
+                    )
+                    cost_db.commit()
+            except Exception as exc:
+                # El embedding no bloquea la extracción, pero no debe fallar en silencio:
+                # su ausencia afecta búsqueda semántica y puede ocultar consumo facturado.
+                logger.warning(
+                    "[parse_cv] embedding no persistido para candidate=%s: %s",
+                    candidate.id,
+                    exc,
+                )
 
             # Actualizar campos básicos si OpenAI los devolvió
             full_name: str = extracted.get("full_name", "")
@@ -319,25 +391,31 @@ def parse_cv(
             upload_file_sync(normalized_key, normalized_pdf_bytes, "application/pdf")
             candidate.normalized_cv_url = normalized_key
 
+            storage_cost = calculate_r2_cost(
+                bytes_stored=len(normalized_pdf_bytes), class_a_operations=1, class_b_operations=1
+            )
+            with _SyncSession() as cost_db:
+                record_cost_sync(
+                    cost_db,
+                    process_id=proc_uuid,
+                    candidate_id=candidate.id,
+                    user_id=process.recruiter_id if process else None,
+                    operation_type=OperationType.CV_STORAGE.value,
+                    provider="CLOUDFLARE_R2",
+                    model_used="r2-standard-normalized-cv",
+                    estimated_cost=storage_cost.amount_usd,
+                    cost_source=storage_cost.source,
+                    external_reference=(
+                        f"r2-normalize:{normalized_key}:{self.request.id or uuid.uuid4()}"
+                    ),
+                    cost_breakdown={**storage_cost.breakdown, "object_key": normalized_key},
+                )
+                cost_db.commit()
+
             # Actualizar estado del proceso-candidato
             pc.status = CandidateStatus.MATCH_PENDING.value
             sync_process_status_sync(db, proc_uuid)
 
-            # Registrar costo
-            estimated_cost = (tokens_in * _INPUT_COST) + (tokens_out * _OUTPUT_COST)
-            cost_log = CostLog(
-                process_id=proc_uuid,
-                # Si la deduplicación reasignó el proceso, `cand_uuid` ya no
-                # existe y viola la FK de cost_logs. `candidate.id` siempre es
-                # el candidato efectivo que conserva el perfil.
-                candidate_id=candidate.id,
-                operation_type=OperationType.CV_EXTRACTION.value,
-                model_used=model,
-                tokens_input=tokens_in,
-                tokens_output=tokens_out,
-                estimated_cost=estimated_cost,
-            )
-            db.add(cost_log)
             db.commit()
 
             return {
@@ -345,7 +423,7 @@ def parse_cv(
                 "status": CandidateStatus.MATCH_PENDING.value,
                 "tokens_in": tokens_in,
                 "tokens_out": tokens_out,
-                "estimated_cost_usd": round(estimated_cost, 6),
+                "estimated_cost_usd": float(extraction_cost.amount_usd),
             }
 
         except Exception as exc:

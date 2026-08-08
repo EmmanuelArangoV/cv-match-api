@@ -1,6 +1,7 @@
 import enum
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
@@ -133,12 +134,15 @@ class AIProvider(enum.StrEnum):
 
 
 class OperationType(enum.StrEnum):
+    CV_STORAGE = "CV_STORAGE"
     CV_EXTRACTION = "CV_EXTRACTION"
+    CV_EMBEDDING = "CV_EMBEDDING"
     CV_MATCH = "CV_MATCH"
     JD_ENHANCEMENT = "JD_ENHANCEMENT"
     VOICE_CALL = "VOICE_CALL"
     VOICE_TRANSCRIPTION = "VOICE_TRANSCRIPTION"
     WHATSAPP_MESSAGE = "WHATSAPP_MESSAGE"
+    WHATSAPP_AI = "WHATSAPP_AI"
     ANSWER_EVALUATION = "ANSWER_EVALUATION"
     TWILIO_CALL = "TWILIO_CALL"
 
@@ -555,11 +559,23 @@ class CostLog(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     operation_type: Mapped[OperationType] = mapped_column(String(50), nullable=False)
+    provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
     model_used: Mapped[str] = mapped_column(String(100), nullable=False)
     tokens_input: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tokens_cached: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tokens_output: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     call_duration_s: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    estimated_cost: Mapped[float] = mapped_column(DECIMAL(10, 6), nullable=False, default=0.0)
+    estimated_cost: Mapped[float] = mapped_column(DECIMAL(14, 9), nullable=False, default=0.0)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="USD")
+    cost_source: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="legacy_estimate"
+    )
+    external_reference: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, unique=True
+    )
+    cost_breakdown: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

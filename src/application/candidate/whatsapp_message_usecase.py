@@ -19,6 +19,7 @@ from src.config import settings
 from src.infrastructure.db.models import (
     Candidate,
     HiringProcess,
+    OperationType,
     ProcessCandidate,
     ProfilingRun,
     ProfilingRunStatus,
@@ -317,12 +318,43 @@ class ProcessWhatsAppMessageUseCase:
                 messages.append({"role": "user", "content": turn_text})
         messages.append({"role": "user", "content": message_text})
 
+        from src.infrastructure.cache.redis_client import get_active_ai_model
+
+        model = await get_active_ai_model(
+            self.db, "WHATSAPP_MESSAGE", "OPENAI", "gpt-4o"
+        )
         ai_response = await self.ai.chat.completions.create(
-            model="gpt-4o",
+            model=model,
             messages=messages,
             response_format={"type": "json_object"},
             temperature=0.3,
         )
+
+        from src.infrastructure.costs import (
+            calculate_openai_cost,
+            extract_openai_usage,
+            record_cost_async,
+        )
+
+        tokens_in, tokens_out, cached_tokens = extract_openai_usage(ai_response)
+        ai_cost = calculate_openai_cost(model, tokens_in, tokens_out, cached_tokens)
+        await record_cost_async(
+            self.db,
+            process_id=process.id,
+            candidate_id=candidate.id,
+            user_id=process.recruiter_id,
+            operation_type=OperationType.WHATSAPP_AI.value,
+            provider="OPENAI",
+            model_used=model,
+            tokens_input=tokens_in,
+            tokens_cached=cached_tokens,
+            tokens_output=tokens_out,
+            estimated_cost=ai_cost.amount_usd,
+            cost_source=ai_cost.source,
+            external_reference=f"openai:{ai_response.id}",
+            cost_breakdown=ai_cost.breakdown,
+        )
+        await self.db.commit()
 
         content = ai_response.choices[0].message.content or "{}"
         analysis = json.loads(content)

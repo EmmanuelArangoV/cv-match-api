@@ -35,3 +35,31 @@ def test_head_migration_repairs_missing_whatsapp_conversation() -> None:
 
     assert len(statements) == 1
     assert "ADD COLUMN IF NOT EXISTS whatsapp_conversation JSONB" in statements[0]
+
+
+def test_cost_migration_adds_auditability_and_idempotency() -> None:
+    migration = _load_migration("f9b2c4d6e8a0_add_auditable_cost_tracking.py")
+    added_columns: list[str] = []
+    constraints: list[tuple[str, tuple[str, ...]]] = []
+    migration.op = SimpleNamespace(
+        add_column=lambda table, column: added_columns.append(column.name),
+        alter_column=lambda *args, **kwargs: None,
+        create_unique_constraint=lambda name, table, columns: constraints.append(
+            (name, tuple(columns))
+        ),
+        execute=lambda statement: None,
+    )
+
+    migration.upgrade()
+
+    assert {
+        "provider",
+        "tokens_cached",
+        "currency",
+        "cost_source",
+        "external_reference",
+        "cost_breakdown",
+    }.issubset(added_columns)
+    assert constraints == [
+        ("uq_cost_logs_external_reference", ("external_reference",))
+    ]

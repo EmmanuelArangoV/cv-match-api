@@ -22,15 +22,17 @@ from src.infrastructure.cache.redis_client import (
     get_active_ai_prompt_sync,
     get_global_setting_dict_sync,
 )
+from src.infrastructure.costs import (
+    calculate_openai_cost,
+    extract_openai_usage,
+    record_cost_sync,
+)
 from src.infrastructure.workers.celery_app import celery_app
 
 _engine = create_engine(settings.database_url_sync)
 _SyncSession = sessionmaker(bind=_engine)
 
 # Costo estimado gpt-4o (USD por token)
-_INPUT_COST = 0.0000025
-_OUTPUT_COST = 0.000010
-
 
 def _get_openai() -> OpenAI:
     return OpenAI(api_key=settings.openai_api_key)
@@ -44,7 +46,7 @@ def _call_openai_match(
     system_prompt: str,
     model: str,
     client: OpenAI,
-) -> tuple[dict, int, int]:
+) -> tuple[dict, int, int, int, str]:
     """Llama a OpenAI con el prompt de match y retorna (resultado_json, tokens_in, tokens_out)."""
     messages = build_match_messages(
         normalized_cv=normalized_cv,
@@ -61,7 +63,8 @@ def _call_openai_match(
         temperature=0.1,
     )
     result = json.loads(response.choices[0].message.content)
-    return result, response.usage.prompt_tokens, response.usage.completion_tokens
+    tokens_in, tokens_out, cached_tokens = extract_openai_usage(response)
+    return result, tokens_in, tokens_out, cached_tokens, str(response.id)
 
 
 def execute_match(
@@ -70,7 +73,6 @@ def execute_match(
 ) -> dict:
     from src.infrastructure.db.models import (
         CandidateStatus,
-        CostLog,
         HiringProcess,
         JobDescription,
         MatchCategory,
@@ -153,7 +155,7 @@ def execute_match(
 
         # Llamar a OpenAI
         client = _get_openai()
-        match_result, tokens_in, tokens_out = _call_openai_match(
+        match_result, tokens_in, tokens_out, cached_tokens, response_id = _call_openai_match(
             normalized_cv=candidate.normalized_cv,
             jd_text=jd_text,
             weights=weights,
@@ -162,6 +164,26 @@ def execute_match(
             model=model,
             client=client,
         )
+
+        match_cost = calculate_openai_cost(model, tokens_in, tokens_out, cached_tokens)
+        with _SyncSession() as cost_db:
+            record_cost_sync(
+                cost_db,
+                process_id=proc_uuid,
+                candidate_id=candidate.id,
+                user_id=process.recruiter_id,
+                operation_type=OperationType.CV_MATCH.value,
+                provider="OPENAI",
+                model_used=model,
+                tokens_input=tokens_in,
+                tokens_cached=cached_tokens,
+                tokens_output=tokens_out,
+                estimated_cost=match_cost.amount_usd,
+                cost_source=match_cost.source,
+                external_reference=f"openai:{response_id}",
+                cost_breakdown=match_cost.breakdown,
+            )
+            cost_db.commit()
 
         # Parsear resultado
         overall_score = float(match_result.get("overall_score", 0))
@@ -177,18 +199,6 @@ def execute_match(
         pc.match_explanation = match_result
         pc.status = CandidateStatus.MATCHED.value
 
-        # Registrar costo
-        estimated_cost = (tokens_in * _INPUT_COST) + (tokens_out * _OUTPUT_COST)
-        cost_log = CostLog(
-            process_id=proc_uuid,
-            candidate_id=candidate.id,
-            operation_type=OperationType.CV_MATCH.value,
-            model_used=model,
-            tokens_input=tokens_in,
-            tokens_output=tokens_out,
-            estimated_cost=estimated_cost,
-        )
-        db.add(cost_log)
         db.flush()
 
         # La etapa agregada se deriva después de guardar el resultado, sin que
@@ -238,7 +248,7 @@ def execute_match(
             "status": "MATCHED",
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
-            "estimated_cost_usd": round(estimated_cost, 6),
+            "estimated_cost_usd": float(match_cost.amount_usd),
         }
 
 

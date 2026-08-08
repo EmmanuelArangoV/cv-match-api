@@ -13,6 +13,7 @@ def _mock_twilio(monkeypatch) -> MagicMock:
     monkeypatch.setattr(settings, "twilio_from_number", "+15550000001")
     monkeypatch.setattr(settings, "twilio_ring_timeout_seconds", 25)
     monkeypatch.setattr(settings, "machine_detection_timeout", 10)
+    monkeypatch.setattr(settings, "twilio_machine_detection_async", False)
     return create
 
 
@@ -36,3 +37,19 @@ def test_outbound_call_enables_synchronous_amd_with_feature_flag(monkeypatch):
     params = create.call_args.kwargs
     assert params["machine_detection"] == "Enable"
     assert params["machine_detection_timeout"] == 10
+    assert "async_amd" not in params
+
+
+def test_outbound_call_enables_async_amd_callback(monkeypatch):
+    create = _mock_twilio(monkeypatch)
+    monkeypatch.setattr(settings, "twilio_machine_detection_enabled", True)
+    monkeypatch.setattr(settings, "twilio_machine_detection_async", True)
+
+    twilio_client.create_outbound_call("+15550000002", "run-3")
+
+    params = create.call_args.kwargs
+    assert params["async_amd"] is True
+    assert params["async_amd_status_callback_method"] == "POST"
+    assert params["async_amd_status_callback"].endswith(
+        "/api/v1/webhooks/twilio/amd-status?run_id=run-3"
+    )
