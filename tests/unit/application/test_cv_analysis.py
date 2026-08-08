@@ -124,9 +124,7 @@ async def test_analyze_endpoint_reports_queued_tasks_and_skipped_candidates():
         response = await analyze_cvs(process_id, MagicMock(), db)
 
     assert response["queued"] == 1
-    assert response["tasks"] == [
-        {"process_candidate_id": str(queued_pc.id), "task_id": "task-1"}
-    ]
+    assert response["tasks"] == [{"process_candidate_id": str(queued_pc.id), "task_id": "task-1"}]
     assert response["skipped"] == [
         {
             "process_candidate_id": str(skipped_pc.id),

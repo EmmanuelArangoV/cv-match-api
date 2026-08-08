@@ -344,17 +344,17 @@ class ProcessCandidate(Base):
 
     @property
     def effective_whatsapp_consent_status(self) -> str | None:
-        """Retorna el estado de consentimiento solo si ya se envió el mensaje por WhatsApp.
-        Si el estado es PENDING y aún no se ha enviado el mensaje (whatsapp_sent_at is None), retorna None."""
+        """Retorna el consentimiento solo cuando el mensaje de WhatsApp ya fue enviado.
+
+        Un estado PENDING sin ``whatsapp_sent_at`` todavía no representa una solicitud real.
+        """
         if (
             self.whatsapp_consent_status == WhatsAppConsentStatus.PENDING.value
             or self.whatsapp_consent_status == WhatsAppConsentStatus.PENDING
         ) and self.whatsapp_sent_at is None:
             return None
         return (
-            str(self.whatsapp_consent_status)
-            if self.whatsapp_consent_status is not None
-            else None
+            str(self.whatsapp_consent_status) if self.whatsapp_consent_status is not None else None
         )
 
     # Notas del recruiter y override humano

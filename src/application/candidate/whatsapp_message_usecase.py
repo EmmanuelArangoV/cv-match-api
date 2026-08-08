@@ -364,9 +364,7 @@ class ProcessWhatsAppMessageUseCase:
                     .with_for_update()
                 )
                 if run:
-                    await transition_profiling_async(
-                        self.db, run, pc, ProfilingRunStatus.QUEUED
-                    )
+                    await transition_profiling_async(self.db, run, pc, ProfilingRunStatus.QUEUED)
                     publish_run_id = str(run.id)
 
         elif intent == "REJECTED":

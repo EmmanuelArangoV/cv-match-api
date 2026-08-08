@@ -8,11 +8,10 @@ WORKDIR /app
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-COPY pyproject.toml ./
-COPY src ./src
+COPY requirements.lock ./
 
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir .
+    && pip install --no-cache-dir --require-hashes -r requirements.lock
 
 
 FROM python:3.12-slim AS runtime

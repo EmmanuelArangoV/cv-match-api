@@ -109,10 +109,7 @@ async def trigger_profiling(
     process = await db.get(HiringProcess, process_id)
     if not process:
         raise NotFoundException("Proceso no encontrado")
-    if (
-        current_user.role == UserRole.RECRUITER.value
-        and process.recruiter_id != current_user.id
-    ):
+    if current_user.role == UserRole.RECRUITER.value and process.recruiter_id != current_user.id:
         raise NotFoundException("Proceso no encontrado")
 
     HiringProcessRules.require_active_process(ProcessStatus(process.status))
@@ -226,9 +223,7 @@ async def trigger_profiling(
                 task = start_profiling_call.delay(str(run.id))
         except Exception:
             locked_run = await db.scalar(
-                select(ProfilingRun)
-                .where(ProfilingRun.id == run.id)
-                .with_for_update()
+                select(ProfilingRun).where(ProfilingRun.id == run.id).with_for_update()
             )
             locked_pc = await db.get(ProcessCandidate, run.process_candidate_id)
             if locked_run and locked_pc:
@@ -272,8 +267,7 @@ async def list_profiling_runs(
 ) -> dict:
     process = await db.get(HiringProcess, process_id)
     if not process or (
-        current_user.role == UserRole.RECRUITER.value
-        and process.recruiter_id != current_user.id
+        current_user.role == UserRole.RECRUITER.value and process.recruiter_id != current_user.id
     ):
         raise NotFoundException("Proceso no encontrado")
     result = await db.execute(
@@ -462,8 +456,7 @@ async def get_profiling_run(
 
     process = await db.get(HiringProcess, run.process_candidate.process_id)
     if not process or (
-        current_user.role == UserRole.RECRUITER.value
-        and process.recruiter_id != current_user.id
+        current_user.role == UserRole.RECRUITER.value and process.recruiter_id != current_user.id
     ):
         raise NotFoundException("ProfilingRun no encontrado")
     await _ensure_run_transcript_and_answers(db, run)
@@ -482,9 +475,7 @@ async def get_candidate_profiling_history(
         .join(HiringProcess, ProcessCandidate.process_id == HiringProcess.id)
         .where(ProfilingRun.process_candidate_id == process_candidate_id)
         .options(
-            selectinload(ProfilingRun.process_candidate).selectinload(
-                ProcessCandidate.candidate
-            )
+            selectinload(ProfilingRun.process_candidate).selectinload(ProcessCandidate.candidate)
         )
         .order_by(ProfilingRun.created_at.desc())
     )
@@ -613,8 +604,7 @@ async def cancel_profiling_run(
     pc = run.process_candidate
     process = await db.get(HiringProcess, pc.process_id) if pc else None
     if not process or (
-        current_user.role == UserRole.RECRUITER.value
-        and process.recruiter_id != current_user.id
+        current_user.role == UserRole.RECRUITER.value and process.recruiter_id != current_user.id
     ):
         raise NotFoundException("ProfilingRun no encontrado")
 
@@ -655,8 +645,7 @@ async def override_profiling_run(
 
     process = await db.get(HiringProcess, run.process_candidate.process_id)
     if not process or (
-        current_user.role == UserRole.RECRUITER.value
-        and process.recruiter_id != current_user.id
+        current_user.role == UserRole.RECRUITER.value and process.recruiter_id != current_user.id
     ):
         raise NotFoundException("ProfilingRun no encontrado")
 

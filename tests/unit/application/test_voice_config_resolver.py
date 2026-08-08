@@ -60,17 +60,13 @@ def test_process_override_takes_precedence_over_question_set_default():
 
 
 def test_adds_consent_instruction_when_status_is_known():
-    config = resolve_voice_config(
-        _question_set(), _process(), whatsapp_consent_status="TIMEOUT"
-    )
+    config = resolve_voice_config(_question_set(), _process(), whatsapp_consent_status="TIMEOUT")
 
     assert "consentimiento explícito" in config.system_prompt
 
 
 def test_does_not_ask_again_after_whatsapp_consent():
-    config = resolve_voice_config(
-        _question_set(), _process(), whatsapp_consent_status="ACCEPTED"
-    )
+    config = resolve_voice_config(_question_set(), _process(), whatsapp_consent_status="ACCEPTED")
 
     assert "NO le vuelvas a pedir permiso" in config.system_prompt
 

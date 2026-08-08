@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     twilio_from_number: str = ""
     twilio_api_url: str = "https://api.twilio.com"
     twilio_validate_signature: bool = True
+    twilio_machine_detection_enabled: bool = False
 
     # ElevenLabs
     elevenlabs_api_key: str = ""
