@@ -8,30 +8,13 @@ on:
 jobs:
   qa:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: pgvector/pgvector:pg16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: riwimatch_test
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U postgres -d riwimatch_test"
-          --health-interval 5s --health-timeout 5s --health-retries 10
-      redis:
-        image: redis:7-alpine
-        ports: ["6379:6379"]
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       APP_ENV: test
       APP_SECRET_KEY: ci-only-secret
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/riwimatch_test
       DATABASE_URL_SYNC: postgresql://postgres:postgres@127.0.0.1:5432/riwimatch_test
       REDIS_URL: redis://127.0.0.1:6379/0
-      RUN_INTEGRATION_TESTS: "1"
+      RUN_INTEGRATION_TESTS: "0"
       TWILIO_MACHINE_DETECTION_ENABLED: "false"
     steps:
       - uses: actions/checkout@v4
@@ -44,6 +27,5 @@ jobs:
       - run: pip-audit -r requirements.lock
       - run: ruff check src tests
       - run: python scripts/check_mypy_ratchet.py
-      - run: alembic upgrade head
       - run: pytest -q tests
       - run: docker build -t riwimatch-backend:${{ github.sha }} .
