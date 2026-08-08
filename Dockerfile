@@ -21,6 +21,7 @@ RUN groupadd --system app && useradd --system --gid app --no-create-home app
 WORKDIR /app
 
 ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONPATH="/app" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
