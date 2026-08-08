@@ -7,7 +7,7 @@ import uuid
 from functools import partial
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -16,13 +16,14 @@ from src.application.candidate.whatsapp_message_usecase import ProcessWhatsAppMe
 from src.application.profiling.call_context_cache import (
     delete_call_context_sync,
     get_call_context,
+    get_prepared_twiml,
     voice_config_from_context,
 )
 from src.application.profiling.lifecycle import transition_profiling_async
 from src.application.profiling.voice_config_resolver import resolve_voice_config
 from src.config import settings
 from src.domain.shared.exceptions import BusinessRuleException
-from src.infrastructure.db.database import get_db
+from src.infrastructure.db.database import AsyncSessionFactory, get_db
 from src.infrastructure.db.models import (
     AITaskType,
     Candidate,
@@ -178,6 +179,34 @@ async def _get_run_or_none(db: AsyncSession, run_id: str) -> ProfilingRun | None
     return await db.get(ProfilingRun, run_uuid)
 
 
+async def _mark_cached_call_answered(run_id: str, answered_by: str | None) -> None:
+    """Persiste ANSWERED despues de enviar el TwiML cacheado a Twilio."""
+    async with AsyncSessionFactory() as db:
+        try:
+            profiling_run = await _get_run_or_none(db, run_id)
+            if not profiling_run:
+                return
+            if profiling_run.status in {
+                ProfilingRunStatus.COMPLETED.value,
+                ProfilingRunStatus.FAILED.value,
+                ProfilingRunStatus.CANCELLED.value,
+                ProfilingRunStatus.NO_ANSWER.value,
+                ProfilingRunStatus.VOICEMAIL_DETECTED.value,
+            }:
+                return
+            profiling_run.amd_result = str(answered_by)
+            if profiling_run.status == ProfilingRunStatus.CALLING.value:
+                pc = await db.get(ProcessCandidate, profiling_run.process_candidate_id)
+                if pc:
+                    await transition_profiling_async(
+                        db, profiling_run, pc, ProfilingRunStatus.ANSWERED
+                    )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            logger.exception("[twilio][twiml] fallo persistiendo respuesta cacheada run=%s", run_id)
+
+
 def _build_dynamic_variables(
     pc: ProcessCandidate, process: HiringProcess, candidate: Candidate
 ) -> dict[str, str]:
@@ -190,7 +219,10 @@ def _build_dynamic_variables(
 
 @router.post("/twilio/twiml")
 async def twilio_twiml_webhook(
-    request: Request, run_id: str, db: AsyncSession = Depends(get_db)
+    request: Request,
+    run_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
 ) -> Response:
     """
     Webhook que Twilio invoca tras Answering Machine Detection sincrono, pidiendo el
@@ -210,6 +242,20 @@ async def twilio_twiml_webhook(
     answered_by = form.get("AnsweredBy")
     call_sid = str(form.get("CallSid", ""))
     to_number = str(form.get("To", ""))
+
+    # Camino caliente: AMD ya confirmo que no es maquina y el worker preparo
+    # el TwiML mientras el telefono timbraba. Responder sin esperar PostgreSQL.
+    if answered_by not in _MACHINE_ANSWERED_BY:
+        prepared_twiml = await get_prepared_twiml(run_id, call_sid)
+        if prepared_twiml:
+            background_tasks.add_task(_mark_cached_call_answered, run_id, answered_by)
+            logger.info(
+                "[twilio][twiml] cache hit run=%s sid=%s answered_by=%s",
+                run_id,
+                call_sid,
+                answered_by,
+            )
+            return Response(content=prepared_twiml, media_type="application/xml")
 
     # El worker prepara el contexto antes de marcar. En el camino caliente solo
     # necesitamos el run y su ProcessCandidate para aplicar la transicion.

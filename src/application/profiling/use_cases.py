@@ -13,6 +13,7 @@ en la URL del webhook.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -23,6 +24,7 @@ from twilio.base.exceptions import TwilioRestException
 from src.application.profiling.call_context_cache import (
     build_dynamic_variables,
     cache_call_context_sync,
+    cache_prepared_twiml_sync,
 )
 from src.application.profiling.lifecycle import transition_profiling_sync
 from src.application.profiling.voice_config_resolver import resolve_voice_config
@@ -41,6 +43,7 @@ from src.infrastructure.voice import elevenlabs_client
 from src.infrastructure.voice.twilio_client import create_outbound_call
 
 _ACTIVE_CALL_STATUSES = (ProfilingRunStatus.CALLING.value, ProfilingRunStatus.ANSWERED.value)
+logger = logging.getLogger(__name__)
 
 
 def _is_twilio_auth_error(exc: TwilioRestException) -> bool:
@@ -138,6 +141,26 @@ class InitiateProfilingCallUseCase:
             )
             return run
         run.twilio_call_sid = call_sid
+        self.db.flush()
+
+        # El CallSid ya existe mientras el telefono sigue timbrando. Registrar
+        # ahora permite que el webhook de respuesta solo devuelva TwiML cacheado.
+        try:
+            twiml = elevenlabs_client.register_call(
+                voice_config,
+                dynamic_variables,
+                candidate.phone,
+                call_sid,
+            )
+            cache_prepared_twiml_sync(str(run.id), call_sid, twiml)
+        except Exception as exc:
+            # La llamada ya fue creada: conservar el fallback del webhook es mas
+            # seguro que cancelar un intento que aun puede conectarse.
+            logger.warning(
+                "[profiling] no se pudo pre-registrar TwiML para run %s (%s)",
+                run.id,
+                exc,
+            )
         return run
 
 
