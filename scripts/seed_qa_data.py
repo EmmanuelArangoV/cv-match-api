@@ -10,6 +10,7 @@ from src.infrastructure.auth.password import hash_password
 from src.infrastructure.db.database import engine
 
 USER_ID = uuid.UUID("00000000-0000-4000-8000-000000000001")
+USER_EMAIL = "admin@qa.example.com"
 SET_ID = uuid.UUID("00000000-0000-4000-8000-000000000002")
 QUESTION_ID = uuid.UUID("00000000-0000-4000-8000-000000000003")
 PROCESS_ID = uuid.UUID("00000000-0000-4000-8000-000000000004")
@@ -28,11 +29,12 @@ async def main() -> None:
             text(
                 """
                 INSERT INTO users (id, name, last_name, email, password_hash, role, status)
-                VALUES (:id, 'Admin', 'QA', 'admin@qa.test', :password_hash, 'ADMIN', 'ACTIVE')
-                ON CONFLICT (id) DO UPDATE SET password_hash = EXCLUDED.password_hash
+                VALUES (:id, 'Admin', 'QA', :email, :password_hash, 'ADMIN', 'ACTIVE')
+                ON CONFLICT (id) DO UPDATE
+                SET email = EXCLUDED.email, password_hash = EXCLUDED.password_hash
                 """
             ),
-            {"id": USER_ID, "password_hash": password_hash},
+            {"id": USER_ID, "email": USER_EMAIL, "password_hash": password_hash},
         )
         await connection.execute(
             text(
@@ -106,7 +108,7 @@ async def main() -> None:
             },
         )
 
-    print("Dataset QA listo para admin@qa.test")
+    print(f"Dataset QA listo para {USER_EMAIL}")
 
 
 if __name__ == "__main__":
