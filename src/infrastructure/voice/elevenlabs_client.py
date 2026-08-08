@@ -7,6 +7,7 @@ que arme y devuelva el TwiML que conecta la llamada al agente conversacional, co
 system prompt/voz/idioma inyectados dinamicamente via `conversation_config_override`.
 """
 
+import json
 import logging
 import time
 from typing import Any
@@ -55,6 +56,19 @@ def _get_allowed_overrides(agent_id: str) -> dict[str, bool]:
     if cached and now - cached[0] < _ALLOWED_OVERRIDES_TTL_SECONDS:
         return cached[1]
 
+    # El worker lo prepara antes de marcar; el webhook puede reutilizarlo sin
+    # consultar la API de ElevenLabs durante el primer audio.
+    try:
+        from src.infrastructure.cache.redis_client import redis_client_sync
+
+        shared = redis_client_sync.get(f"elevenlabs:allowed-overrides:{agent_id}")
+        if shared:
+            allowed = json.loads(shared)
+            _allowed_overrides_cache[agent_id] = (now, allowed)
+            return allowed
+    except Exception as exc:
+        logger.warning(f"[elevenlabs] no se pudo leer cache de overrides ({exc})")
+
     allowed = dict(_DEFAULT_ALLOWED_OVERRIDES)
     try:
         agent = get_elevenlabs_client().conversational_ai.agents.get(agent_id=agent_id)
@@ -82,7 +96,22 @@ def _get_allowed_overrides(agent_id: str) -> dict[str, bool]:
         )
 
     _allowed_overrides_cache[agent_id] = (now, allowed)
+    try:
+        from src.infrastructure.cache.redis_client import redis_client_sync
+
+        redis_client_sync.setex(
+            f"elevenlabs:allowed-overrides:{agent_id}",
+            _ALLOWED_OVERRIDES_TTL_SECONDS,
+            json.dumps(allowed),
+        )
+    except Exception as exc:
+        logger.warning(f"[elevenlabs] no se pudo guardar cache de overrides ({exc})")
     return allowed
+
+
+def preload_agent_overrides(agent_id: str) -> None:
+    """Calienta el cache antes de marcar, nunca durante el primer audio."""
+    _get_allowed_overrides(agent_id)
 
 
 def get_elevenlabs_client() -> ElevenLabs:

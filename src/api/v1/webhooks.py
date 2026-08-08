@@ -13,6 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.application.candidate.whatsapp_message_usecase import ProcessWhatsAppMessageUseCase
+from src.application.profiling.call_context_cache import (
+    delete_call_context_sync,
+    get_call_context,
+    voice_config_from_context,
+)
 from src.application.profiling.lifecycle import transition_profiling_async
 from src.application.profiling.voice_config_resolver import resolve_voice_config
 from src.config import settings
@@ -206,19 +211,35 @@ async def twilio_twiml_webhook(
     call_sid = str(form.get("CallSid", ""))
     to_number = str(form.get("To", ""))
 
-    # Una sola consulta con eager-load de todo lo necesario — Twilio ya viene de esperar
-    # el analisis de AMD, cada round-trip adicional a Supabase aqui es silencio en vivo
-    # para quien contesto la llamada.
-    result = await db.execute(
-        select(ProfilingRun)
-        .where(ProfilingRun.id == uuid.UUID(run_id))
-        .options(
-            selectinload(ProfilingRun.question_set).selectinload(QuestionSet.questions),
-            selectinload(ProfilingRun.process_candidate).selectinload(ProcessCandidate.candidate),
-            selectinload(ProfilingRun.process_candidate).selectinload(ProcessCandidate.process),
+    # El worker prepara el contexto antes de marcar. En el camino caliente solo
+    # necesitamos el run y su ProcessCandidate para aplicar la transicion.
+    cached_context = await get_call_context(run_id)
+    if cached_context:
+        profiling_run = await db.get(ProfilingRun, uuid.UUID(run_id))
+        pc = (
+            await db.execute(
+                select(ProcessCandidate).where(
+                    ProcessCandidate.id == profiling_run.process_candidate_id
+                )
+            )
+        ).scalar_one_or_none() if profiling_run else None
+        process = question_set = candidate = None
+    else:
+        # Compatibilidad para corridas antiguas que no alcanzaron a preparar cache.
+        result = await db.execute(
+            select(ProfilingRun)
+            .where(ProfilingRun.id == uuid.UUID(run_id))
+            .options(
+                selectinload(ProfilingRun.question_set).selectinload(QuestionSet.questions),
+                selectinload(ProfilingRun.process_candidate).selectinload(ProcessCandidate.candidate),
+                selectinload(ProfilingRun.process_candidate).selectinload(ProcessCandidate.process),
+            )
         )
-    )
-    profiling_run = result.scalar_one_or_none()
+        profiling_run = result.scalar_one_or_none()
+        pc = profiling_run.process_candidate if profiling_run else None
+        process = pc.process if pc else None
+        question_set = profiling_run.question_set if profiling_run else None
+        candidate = pc.candidate if pc else None
     if not profiling_run:
         logger.error(f"[twilio][twiml] ProfilingRun {run_id} no encontrado")
         return Response(content=_TWIML_HANGUP, media_type="application/xml")
@@ -243,30 +264,33 @@ async def twilio_twiml_webhook(
         retry_or_fail_profiling_call.delay(str(profiling_run.id), f"AMD:{answered_by}")
         return Response(content=_TWIML_HANGUP, media_type="application/xml")
 
-    # Humano: resolver la config de voz efectiva y registrar la llamada en ElevenLabs.
+    # Humano: usar el contexto preparado o resolverlo solo como fallback.
     profiling_run.amd_result = str(answered_by)
-    pc = profiling_run.process_candidate
-    process = pc.process if pc else None
-    question_set = profiling_run.question_set
-    candidate = pc.candidate if pc else None
-
-    if not (pc and process and question_set and candidate):
+    if not pc:
         logger.error(f"[twilio][twiml] datos incompletos para ProfilingRun {run_id}")
         await db.commit()
         return Response(content=_TWIML_HANGUP, media_type="application/xml")
 
     await transition_profiling_async(db, profiling_run, pc, ProfilingRunStatus.ANSWERED)
+    if cached_context:
+        voice_config = voice_config_from_context(cached_context)
+        dynamic_variables = cached_context["dynamic_variables"]
+        to_number = cached_context.get("to_number") or to_number
+    else:
+        from src.infrastructure.ai.prompts import VOICE_CALL_AGENT_BASE_PROMPT
+        from src.infrastructure.cache.redis_client import get_active_ai_prompt
 
-    from src.infrastructure.ai.prompts import VOICE_CALL_AGENT_BASE_PROMPT
-    from src.infrastructure.cache.redis_client import get_active_ai_prompt
-
-    universal_prompt = await get_active_ai_prompt(
-        db, AITaskType.VOICE_CALL_AGENT.value, VOICE_CALL_AGENT_BASE_PROMPT
-    )
-    voice_config = resolve_voice_config(
-        question_set, process, pc.whatsapp_consent_status, universal_prompt
-    )
-    dynamic_variables = _build_dynamic_variables(pc, process, candidate)
+        universal_prompt = await get_active_ai_prompt(
+            db, AITaskType.VOICE_CALL_AGENT.value, VOICE_CALL_AGENT_BASE_PROMPT
+        )
+        if not (process and question_set and candidate):
+            logger.error(f"[twilio][twiml] datos incompletos para ProfilingRun {run_id}")
+            await db.commit()
+            return Response(content=_TWIML_HANGUP, media_type="application/xml")
+        voice_config = resolve_voice_config(
+            question_set, process, pc.whatsapp_consent_status, universal_prompt
+        )
+        dynamic_variables = _build_dynamic_variables(pc, process, candidate)
 
     try:
         twiml = await asyncio.to_thread(
@@ -438,6 +462,7 @@ async def elevenlabs_post_call_webhook(
         return {"status": "ignored"}
 
     if profiling_run.status == ProfilingRunStatus.COMPLETED.value:
+        await asyncio.to_thread(delete_call_context_sync, str(profiling_run.id))
         return {"status": "ok", "idempotent": True}
     if profiling_run.status in {
         ProfilingRunStatus.FAILED.value,
@@ -510,6 +535,9 @@ async def elevenlabs_post_call_webhook(
     )
 
     await db.commit()
+
+    # El contexto solo es necesario hasta que llega el post-call.
+    await asyncio.to_thread(delete_call_context_sync, str(profiling_run.id))
 
     evaluate_profiling_transcription.delay(str(profiling_run.id), transcript_text)
     return {"status": "ok"}

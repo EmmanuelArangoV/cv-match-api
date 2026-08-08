@@ -20,7 +20,12 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from twilio.base.exceptions import TwilioRestException
 
+from src.application.profiling.call_context_cache import (
+    build_dynamic_variables,
+    cache_call_context_sync,
+)
 from src.application.profiling.lifecycle import transition_profiling_sync
+from src.application.profiling.voice_config_resolver import resolve_voice_config
 from src.config import settings
 from src.domain.hiring_process.rules import HiringProcessRules
 from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
@@ -32,6 +37,7 @@ from src.infrastructure.db.models import (
     ProfilingRunStatus,
     QuestionSet,
 )
+from src.infrastructure.voice import elevenlabs_client
 from src.infrastructure.voice.twilio_client import create_outbound_call
 
 _ACTIVE_CALL_STATUSES = (ProfilingRunStatus.CALLING.value, ProfilingRunStatus.ANSWERED.value)
@@ -89,6 +95,28 @@ class InitiateProfilingCallUseCase:
             )
         ).scalar_one()
         HiringProcessRules.require_budget_available(float(spent_usd), float(process.budget_max_usd))
+
+        # Preparar todo el contexto antes de marcar. El webhook de Twilio solo
+        # debe actualizar estado y devolver el TwiML de ElevenLabs.
+        from src.infrastructure.ai.prompts import VOICE_CALL_AGENT_BASE_PROMPT
+        from src.infrastructure.cache.redis_client import get_active_ai_prompt_sync
+
+        universal_prompt = get_active_ai_prompt_sync(
+            self.db, "VOICE_CALL_AGENT", VOICE_CALL_AGENT_BASE_PROMPT
+        )
+        voice_config = resolve_voice_config(
+            question_set, process, pc.whatsapp_consent_status, universal_prompt
+        )
+        dynamic_variables = build_dynamic_variables(
+            f"{candidate.name} {candidate.last_name}".strip(),
+            process.job_title,
+            str(process.id),
+        )
+        cache_call_context_sync(
+            str(run.id), voice_config, dynamic_variables, candidate.phone
+        )
+        # Esta consulta externa ocurre antes de marcar, no durante el saludo.
+        elevenlabs_client.preload_agent_overrides(voice_config.agent_id)
 
         transition_profiling_sync(
             self.db, run, pc, ProfilingRunStatus.CALLING, now=datetime.now(UTC)
