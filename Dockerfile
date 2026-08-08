@@ -28,6 +28,7 @@ COPY --from=builder /opt/venv /opt/venv
 COPY src ./src
 COPY alembic ./alembic
 COPY alembic.ini ./
+COPY scripts/seed_qa_data.py ./scripts/seed_qa_data.py
 
 USER app
 

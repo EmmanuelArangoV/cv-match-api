@@ -1,6 +1,7 @@
 """Carga un dataset sintetico e idempotente para QA local y staging."""
 
 import asyncio
+import os
 import uuid
 
 from sqlalchemy import text
@@ -17,7 +18,11 @@ PROCESS_CANDIDATE_ID = uuid.UUID("00000000-0000-4000-8000-000000000006")
 
 
 async def main() -> None:
-    password_hash = hash_password("QaOnly-2026!")
+    password = os.environ.get("QA_SEED_ADMIN_PASSWORD")
+    if not password:
+        raise RuntimeError("QA_SEED_ADMIN_PASSWORD es obligatorio para cargar datos QA")
+
+    password_hash = hash_password(password)
     async with engine.begin() as connection:
         await connection.execute(
             text(
@@ -101,7 +106,7 @@ async def main() -> None:
             },
         )
 
-    print("Dataset QA listo: admin@qa.test / QaOnly-2026!")
+    print("Dataset QA listo para admin@qa.test")
 
 
 if __name__ == "__main__":

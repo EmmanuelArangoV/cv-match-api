@@ -13,7 +13,8 @@ htmlcov/
 !.env.example
 tests/
 docs/
-scripts/
+scripts/*
+!scripts/seed_qa_data.py
 *.md
 .idea/
 .vscode/
