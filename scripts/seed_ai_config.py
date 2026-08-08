@@ -5,9 +5,9 @@ realmente está en producción en vez de mostrarse vacío.
 
 Idempotente: si una tarea ya tiene un prompt o modelo activo, se omite para esa tarea.
 
-No incluye WHATSAPP_MESSAGE (el envío de WhatsApp es 100% por plantillas de Meta, no llama a
-ningún modelo de IA) ni un modelo para VOICE_CALL_AGENT (el prompt se inyecta al agente de
-ElevenLabs, no hay un modelo OpenAI propio que seleccionar).
+Incluye WHATSAPP_MESSAGE porque las respuestas conversacionales sí llaman a OpenAI. No incluye
+un modelo para VOICE_CALL_AGENT: su prompt se inyecta al agente de ElevenLabs y el LLM de voz se
+configura en ElevenLabs/QuestionSet, no en OpenAI.
 """
 
 import asyncio
@@ -37,10 +37,11 @@ PROMPTS = {
 }
 
 MODELS = {
-    AITaskType.CV_EXTRACTION: "gpt-4o",
-    AITaskType.CV_MATCH: "gpt-4o",
-    AITaskType.JD_ENHANCEMENT: "gpt-4o",
-    AITaskType.VOICE_PROFILING: "gpt-4o",
+    AITaskType.CV_EXTRACTION: "gpt-5.6-luna",
+    AITaskType.CV_MATCH: "gpt-5.6-luna",
+    AITaskType.JD_ENHANCEMENT: "gpt-5.6-luna",
+    AITaskType.VOICE_PROFILING: "gpt-5.6-luna",
+    AITaskType.WHATSAPP_MESSAGE: "gpt-5.6-luna",
 }
 
 

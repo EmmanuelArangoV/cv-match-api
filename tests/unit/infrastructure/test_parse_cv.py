@@ -101,12 +101,16 @@ def test_parse_cv_registers_cost_against_deduplicated_candidate() -> None:
     session = _Session(original, process_candidate)
     session.existing = existing
 
-    def _openai_result(*args: object, **kwargs: object) -> tuple[dict, int, int, int, str]:
+    def _openai_result(
+        *args: object, **kwargs: object
+    ) -> tuple[dict, int, int, int, int, int, str]:
         session.events.append("openai")
         return (
             {"email": existing.email, "full_name": "Candidato Existente"},
             1,
             1,
+            0,
+            0,
             0,
             "chatcmpl-test",
         )

@@ -152,6 +152,16 @@ _MACHINE_ANSWERED_BY = {
     "machine_end_other",
     "fax",
 }
+
+
+def _used_media_stream(profiling_run: ProfilingRun) -> bool:
+    """Solo factura stream cuando el TwiML se ejecutó o ElevenLabs confirmó conversación."""
+    return profiling_run.status in {
+        ProfilingRunStatus.ANSWERED.value,
+        ProfilingRunStatus.COMPLETED.value,
+    } or bool(profiling_run.elevenlabs_conversation_id)
+
+
 _NO_CONNECT_CALL_STATUSES = {"no-answer", "busy", "failed", "canceled"}
 
 
@@ -235,7 +245,8 @@ async def twilio_twiml_webhook(
     if not valid:
         raise HTTPException(status_code=403, detail="Firma de Twilio invalida")
 
-    answered_by = form.get("AnsweredBy")
+    answered_by_value = form.get("AnsweredBy")
+    answered_by = answered_by_value if isinstance(answered_by_value, str) else None
     call_sid = str(form.get("CallSid", ""))
     to_number = str(form.get("To", ""))
 
@@ -376,7 +387,8 @@ async def twilio_async_amd_webhook(
 
     call_sid = str(form.get("CallSid", ""))
     answered_by = str(form.get("AnsweredBy", "unknown"))
-    duration_ms = int(form.get("MachineDetectionDuration") or 0)
+    duration_value = form.get("MachineDetectionDuration")
+    duration_ms = int(duration_value) if isinstance(duration_value, str) else 0
     profiling_run = await _get_run_or_none(db, run_id)
     if not profiling_run or profiling_run.twilio_call_sid != call_sid:
         return {"status": "ignored"}
@@ -420,7 +432,8 @@ async def twilio_status_webhook(
         return {"status": "ignored"}
 
     if call_status == "completed" and profiling_run.twilio_call_sid == call_sid:
-        form_duration_s = int(form.get("CallDuration") or form.get("Duration") or 0)
+        duration_value = form.get("CallDuration") or form.get("Duration")
+        form_duration_s = int(duration_value) if isinstance(duration_value, str) else 0
         try:
             billing = await asyncio.to_thread(twilio_client.fetch_call_billing, call_sid)
             duration_s = billing.duration_s or form_duration_s
@@ -440,13 +453,7 @@ async def twilio_status_webhook(
             pc = pc_result.scalar_one_or_none()
             process = await db.get(HiringProcess, pc.process_id) if pc else None
             amd_used = bool(profiling_run.amd_result)
-            media_stream_used = profiling_run.status in {
-                ProfilingRunStatus.ANSWERED.value,
-                ProfilingRunStatus.COMPLETED.value,
-            } or bool(profiling_run.elevenlabs_conversation_id) or (
-                settings.twilio_machine_detection_enabled
-                and settings.twilio_machine_detection_async
-            )
+            media_stream_used = _used_media_stream(profiling_run)
             cost = calculate_twilio_cost(
                 duration_s,
                 connectivity_cost,
@@ -460,7 +467,11 @@ async def twilio_status_webhook(
                 user_id=process.recruiter_id if process else None,
                 operation_type=OperationType.TWILIO_CALL.value,
                 provider="TWILIO",
-                model_used="twilio-voice+amd+media-stream",
+                model_used=(
+                    "twilio-voice"
+                    + ("+amd" if amd_used else "")
+                    + ("+media-stream" if media_stream_used else "")
+                ),
                 call_duration_s=duration_s,
                 estimated_cost=cost.amount_usd,
                 currency=currency,

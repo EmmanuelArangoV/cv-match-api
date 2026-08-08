@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from src.application.profiling.lifecycle import transition_profiling_async
 from src.config import settings
+from src.infrastructure.ai.model_compat import DEFAULT_OPENAI_MODEL, chat_completion_options
 from src.infrastructure.db.models import (
     Candidate,
     HiringProcess,
@@ -321,13 +322,13 @@ class ProcessWhatsAppMessageUseCase:
         from src.infrastructure.cache.redis_client import get_active_ai_model
 
         model = await get_active_ai_model(
-            self.db, "WHATSAPP_MESSAGE", "OPENAI", "gpt-4o"
+            self.db, "WHATSAPP_MESSAGE", "OPENAI", DEFAULT_OPENAI_MODEL
         )
         ai_response = await self.ai.chat.completions.create(
             model=model,
             messages=messages,
             response_format={"type": "json_object"},
-            temperature=0.3,
+            **chat_completion_options(model, temperature=0.3),
         )
 
         from src.infrastructure.costs import (
@@ -336,8 +337,21 @@ class ProcessWhatsAppMessageUseCase:
             record_cost_async,
         )
 
-        tokens_in, tokens_out, cached_tokens = extract_openai_usage(ai_response)
-        ai_cost = calculate_openai_cost(model, tokens_in, tokens_out, cached_tokens)
+        (
+            tokens_in,
+            tokens_out,
+            cached_tokens,
+            cache_write_tokens,
+            reasoning_tokens,
+        ) = extract_openai_usage(ai_response)
+        ai_cost = calculate_openai_cost(
+            model,
+            tokens_in,
+            tokens_out,
+            cached_tokens,
+            cache_write_tokens,
+            reasoning_tokens,
+        )
         await record_cost_async(
             self.db,
             process_id=process.id,

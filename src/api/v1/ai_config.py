@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.deps import RequireAdmin, get_current_user
 from src.domain.match.value_objects import MatchThresholds
 from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
+from src.infrastructure.costs import has_openai_pricing
 from src.infrastructure.db.database import get_db
 from src.infrastructure.db.models import (
     AIModelConfiguration,
@@ -79,6 +80,12 @@ async def create_model(
     current_user: User = RequireAdmin,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    if body.provider.upper() == "OPENAI":
+        if not has_openai_pricing(body.model_name):
+            raise BusinessRuleException(
+                "El modelo OpenAI no tiene una tarifa auditable configurada. "
+                "Agrega primero su precio al registro de costos."
+            )
     model = AIModelConfiguration(
         task_type=body.task_type,
         provider=body.provider,
@@ -103,6 +110,11 @@ async def activate_model(
     model = await db.get(AIModelConfiguration, model_id)
     if not model:
         raise NotFoundException("Configuración de modelo no encontrada")
+    if str(model.provider).upper() == "OPENAI" and not has_openai_pricing(model.model_name):
+        raise BusinessRuleException(
+            "El modelo OpenAI no tiene una tarifa auditable configurada. "
+            "Agrega primero su precio al registro de costos."
+        )
 
     siblings = await db.execute(
         select(AIModelConfiguration).where(AIModelConfiguration.task_type == model.task_type)

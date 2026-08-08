@@ -63,3 +63,22 @@ def test_cost_migration_adds_auditability_and_idempotency() -> None:
     assert constraints == [
         ("uq_cost_logs_external_reference", ("external_reference",))
     ]
+
+
+def test_luna_migration_activates_all_openai_workloads_and_feedback_prompt() -> None:
+    migration = _load_migration("a1c3e5f7b9d2_activate_luna_and_voice_feedback.py")
+    statements: list[object] = []
+    migration.op = SimpleNamespace(execute=lambda statement: statements.append(statement))
+
+    migration.upgrade()
+
+    assert migration.down_revision == "f9b2c4d6e8a0"
+    assert set(migration._MODEL_IDS) == {
+        "CV_EXTRACTION",
+        "CV_MATCH",
+        "JD_ENHANCEMENT",
+        "VOICE_PROFILING",
+        "WHATSAPP_MESSAGE",
+    }
+    assert "retroalimentación breve" in migration._VOICE_PROMPT
+    assert len(statements) == 8

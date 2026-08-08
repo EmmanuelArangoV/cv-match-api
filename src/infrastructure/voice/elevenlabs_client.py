@@ -10,7 +10,7 @@ system prompt/voz/idioma inyectados dinamicamente via `conversation_config_overr
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, cast
 
 from elevenlabs.client import ElevenLabs
 from elevenlabs.types import (
@@ -61,9 +61,22 @@ def _get_allowed_overrides(agent_id: str) -> dict[str, bool]:
     try:
         from src.infrastructure.cache.redis_client import redis_client_sync
 
-        shared = redis_client_sync.get(f"elevenlabs:allowed-overrides:{agent_id}")
+        shared = cast(
+            str | bytes | None,
+            redis_client_sync.get(f"elevenlabs:allowed-overrides:{agent_id}"),
+        )
         if shared:
-            allowed = json.loads(shared)
+            parsed = json.loads(shared)
+            if not isinstance(parsed, dict):
+                raise ValueError("El cache de overrides no contiene un objeto JSON")
+            allowed = {
+                **_DEFAULT_ALLOWED_OVERRIDES,
+                **{
+                    key: bool(value)
+                    for key, value in parsed.items()
+                    if isinstance(key, str) and key in _DEFAULT_ALLOWED_OVERRIDES
+                },
+            }
             _allowed_overrides_cache[agent_id] = (now, allowed)
             return allowed
     except Exception as exc:

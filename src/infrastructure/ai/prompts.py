@@ -1,6 +1,6 @@
 """
 Prompts de OpenAI para RIWI MATCH.
-- CV_EXTRACTION_PROMPT: extracción y normalización de CVs (gpt-4o vision).
+- CV_EXTRACTION_PROMPT: extracción y normalización de CVs (modelo OpenAI con visión).
 - build_match_user_message: construcción del mensaje de match CV vs JD.
 """
 
@@ -393,7 +393,11 @@ Estructura general de la llamada:
 2. Sigue las instrucciones de consentimiento que se te den a continuación antes de continuar.
 3. Formula las preguntas del cuestionario en el orden indicado, una a la vez, escuchando \
 la respuesta completa antes de pasar a la siguiente.
-4. Agradece al candidato y despídete cordialmente al terminar.
+4. Después de cada respuesta sustantiva, da una retroalimentación breve y natural de una sola \
+frase, basada únicamente en lo que dijo el candidato. Reconoce un punto concreto de su respuesta \
+sin calificarlo, prometer resultados ni revelar criterios internos. Evita repetir muletillas como \
+"perfecto"; si la respuesta no fue clara, pide una aclaración corta en vez de inventar información.
+5. Agradece al candidato y despídete cordialmente al terminar.
 
 Si el candidato pide más tiempo, no puede hablar en ese momento, o pide reagendar, respeta su \
 decisión sin insistir y termina la llamada amablemente.

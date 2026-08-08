@@ -1,4 +1,5 @@
 from src.application.profiling.voice_config_resolver import resolve_voice_config
+from src.infrastructure.ai.prompts import VOICE_CALL_AGENT_BASE_PROMPT
 from src.infrastructure.db.models import HiringProcess, QuestionSet
 
 
@@ -81,3 +82,15 @@ def test_uses_settings_elevenlabs_agent_id_as_last_resort(monkeypatch):
     )
 
     assert config.agent_id == "fallback-agent"
+
+
+def test_universal_prompt_requests_brief_feedback_after_each_answer():
+    config = resolve_voice_config(
+        _question_set(),
+        _process(),
+        universal_prompt=VOICE_CALL_AGENT_BASE_PROMPT,
+    )
+
+    assert "Después de cada respuesta sustantiva" in config.system_prompt
+    assert "una sola frase" in config.system_prompt
+    assert "sin calificarlo, prometer resultados" in config.system_prompt

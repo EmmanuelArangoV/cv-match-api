@@ -1,7 +1,8 @@
 """
 Tarea Celery: descarga el CV de R2, extrae el contenido según el tipo de archivo
 (PDF → imágenes vía PyMuPDF, DOCX → texto + imágenes embebidas, imágenes → directo),
-llama a gpt-4o vision para extraer el perfil estructurado, genera el PDF normalizado
+llama al modelo OpenAI activo con visión para extraer el perfil estructurado, genera el PDF
+normalizado
 en estilo BBLABS y lo sube a R2.
 """
 
@@ -21,6 +22,7 @@ from sqlalchemy.orm import sessionmaker
 
 from src.application.hiring_process.progress import sync_process_status_sync
 from src.config import settings
+from src.infrastructure.ai.model_compat import DEFAULT_OPENAI_MODEL, chat_completion_options
 from src.infrastructure.ai.prompts import CV_EXTRACTION_PROMPT
 from src.infrastructure.costs import (
     calculate_openai_cost,
@@ -164,20 +166,30 @@ def _get_embedding(text: str, client: OpenAI) -> tuple[list[float], int]:
 
 def _call_openai(
     content_blocks: list[dict], client: OpenAI, prompt: str, model: str
-) -> tuple[dict, int, int, int, str]:
+) -> tuple[dict, int, int, int, int, int, str]:
     content: list[dict] = [{"type": "text", "text": prompt}]
     content.extend(content_blocks)
 
-    response = client.chat.completions.create(
+    response = client.chat.completions.create(  # type: ignore[call-overload]
         model=model,
         messages=[{"role": "user", "content": content}],
         response_format={"type": "json_object"},
-        max_tokens=4096,
+        **chat_completion_options(model, max_tokens=4096),
     )
 
     result = json.loads(response.choices[0].message.content)
-    tokens_in, tokens_out, cached_tokens = extract_openai_usage(response)
-    return result, tokens_in, tokens_out, cached_tokens, str(response.id)
+    tokens_in, tokens_out, cached_tokens, cache_write_tokens, reasoning_tokens = (
+        extract_openai_usage(response)
+    )
+    return (
+        result,
+        tokens_in,
+        tokens_out,
+        cached_tokens,
+        cache_write_tokens,
+        reasoning_tokens,
+        str(response.id),
+    )
 
 
 def _build_extraction_prompt(prompt: str, analysis_context: str | None) -> str:
@@ -270,10 +282,18 @@ def parse_cv(
 
             prompt = get_active_ai_prompt_sync(db, "CV_EXTRACTION", CV_EXTRACTION_PROMPT)
             prompt = _build_extraction_prompt(prompt, pc.analysis_context)
-            model = get_active_ai_model_sync(db, "CV_EXTRACTION", "OPENAI", "gpt-4o")
-            extracted, tokens_in, tokens_out, cached_tokens, response_id = _call_openai(
-                content_blocks, openai_client, prompt, model
+            model = get_active_ai_model_sync(
+                db, "CV_EXTRACTION", "OPENAI", DEFAULT_OPENAI_MODEL
             )
+            (
+                extracted,
+                tokens_in,
+                tokens_out,
+                cached_tokens,
+                cache_write_tokens,
+                reasoning_tokens,
+                response_id,
+            ) = _call_openai(content_blocks, openai_client, prompt, model)
 
             # Deduplicación por correo. Desde este punto, `candidate` puede ser
             # el registro existente al que se reasignó el ProcessCandidate; todas
@@ -296,7 +316,12 @@ def parse_cv(
 
             process = db.get(HiringProcess, proc_uuid)
             extraction_cost = calculate_openai_cost(
-                model, tokens_in, tokens_out, cached_tokens
+                model,
+                tokens_in,
+                tokens_out,
+                cached_tokens,
+                cache_write_tokens,
+                reasoning_tokens,
             )
             # La deduplicación puede haber actualizado el candidato y conserva un lock
             # incompatible con la FK de cost_logs. Confirmamos ese cambio antes de abrir

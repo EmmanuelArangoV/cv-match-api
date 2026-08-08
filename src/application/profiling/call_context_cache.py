@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from typing import Any
+from typing import Any, cast
 
 from src.application.profiling.voice_config_resolver import VoiceCallConfig
 from src.infrastructure.cache.redis_client import redis_client, redis_client_sync
@@ -60,8 +60,11 @@ def cache_call_context_sync(
 
 
 def get_call_context_sync(run_id: str) -> dict[str, Any] | None:
-    raw = redis_client_sync.get(_key(run_id))
-    return json.loads(raw) if raw else None
+    raw = cast(str | bytes | None, redis_client_sync.get(_key(run_id)))
+    if not raw:
+        return None
+    decoded = json.loads(raw)
+    return cast(dict[str, Any], decoded) if isinstance(decoded, dict) else None
 
 
 async def get_call_context(run_id: str) -> dict[str, Any] | None:

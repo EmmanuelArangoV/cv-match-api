@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload, sessionmaker
 from src.application.hiring_process.progress import sync_process_status_sync
 from src.config import settings
 from src.domain.match.value_objects import MatchThresholds, MatchWeights
+from src.infrastructure.ai.model_compat import DEFAULT_OPENAI_MODEL, chat_completion_options
 from src.infrastructure.ai.prompts import MATCH_SYSTEM_PROMPT, build_match_messages
 from src.infrastructure.cache.redis_client import (
     get_active_ai_model_sync,
@@ -32,8 +33,6 @@ from src.infrastructure.workers.celery_app import celery_app
 _engine = create_engine(settings.database_url_sync)
 _SyncSession = sessionmaker(bind=_engine)
 
-# Costo estimado gpt-4o (USD por token)
-
 def _get_openai() -> OpenAI:
     return OpenAI(api_key=settings.openai_api_key)
 
@@ -46,7 +45,7 @@ def _call_openai_match(
     system_prompt: str,
     model: str,
     client: OpenAI,
-) -> tuple[dict, int, int, int, str]:
+) -> tuple[dict, int, int, int, int, int, str]:
     """Llama a OpenAI con el prompt de match y retorna (resultado_json, tokens_in, tokens_out)."""
     messages = build_match_messages(
         normalized_cv=normalized_cv,
@@ -55,16 +54,25 @@ def _call_openai_match(
         thresholds=thresholds,
         system_prompt=system_prompt,
     )
-    response = client.chat.completions.create(
+    response = client.chat.completions.create(  # type: ignore[call-overload]
         model=model,
         messages=messages,
         response_format={"type": "json_object"},
-        max_tokens=4096,
-        temperature=0.1,
+        **chat_completion_options(model, temperature=0.1, max_tokens=4096),
     )
     result = json.loads(response.choices[0].message.content)
-    tokens_in, tokens_out, cached_tokens = extract_openai_usage(response)
-    return result, tokens_in, tokens_out, cached_tokens, str(response.id)
+    tokens_in, tokens_out, cached_tokens, cache_write_tokens, reasoning_tokens = (
+        extract_openai_usage(response)
+    )
+    return (
+        result,
+        tokens_in,
+        tokens_out,
+        cached_tokens,
+        cache_write_tokens,
+        reasoning_tokens,
+        str(response.id),
+    )
 
 
 def execute_match(
@@ -151,11 +159,19 @@ def execute_match(
 
         # Prompt y modelo activos (configurables desde ajustes), con fallback al default de código
         system_prompt = get_active_ai_prompt_sync(db, "CV_MATCH", MATCH_SYSTEM_PROMPT)
-        model = get_active_ai_model_sync(db, "CV_MATCH", "OPENAI", "gpt-4o")
+        model = get_active_ai_model_sync(db, "CV_MATCH", "OPENAI", DEFAULT_OPENAI_MODEL)
 
         # Llamar a OpenAI
         client = _get_openai()
-        match_result, tokens_in, tokens_out, cached_tokens, response_id = _call_openai_match(
+        (
+            match_result,
+            tokens_in,
+            tokens_out,
+            cached_tokens,
+            cache_write_tokens,
+            reasoning_tokens,
+            response_id,
+        ) = _call_openai_match(
             normalized_cv=candidate.normalized_cv,
             jd_text=jd_text,
             weights=weights,
@@ -165,7 +181,14 @@ def execute_match(
             client=client,
         )
 
-        match_cost = calculate_openai_cost(model, tokens_in, tokens_out, cached_tokens)
+        match_cost = calculate_openai_cost(
+            model,
+            tokens_in,
+            tokens_out,
+            cached_tokens,
+            cache_write_tokens,
+            reasoning_tokens,
+        )
         with _SyncSession() as cost_db:
             record_cost_sync(
                 cost_db,

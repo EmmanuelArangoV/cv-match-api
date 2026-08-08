@@ -1,0 +1,4 @@
+interface:
+  display_name: "Auditar costos del pipeline"
+  short_description: "Audita costos E2E y conciliación"
+  default_prompt: "Usa $audit-pipeline-costs para auditar y conciliar los costos del pipeline."

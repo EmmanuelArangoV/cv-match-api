@@ -15,6 +15,7 @@ from src.config import settings
 from src.domain.profiling.value_objects import AdvancementProbability as AdvancementProbabilityVO
 from src.domain.profiling.watchdog import WATCHED_STATUSES, is_run_stale
 from src.domain.shared.exceptions import BusinessRuleException, DomainException, NotFoundException
+from src.infrastructure.ai.model_compat import DEFAULT_OPENAI_MODEL, chat_completion_options
 from src.infrastructure.db.models import (
     AdvancementProbability,
     ProfilingAnswer,
@@ -188,7 +189,9 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
             sys_prompt = get_active_ai_prompt_sync(
                 db, "VOICE_PROFILING", PROFILING_EVALUATION_PROMPT
             )
-            model = get_active_ai_model_sync(db, "VOICE_PROFILING", "OPENAI", "gpt-4o")
+            model = get_active_ai_model_sync(
+                db, "VOICE_PROFILING", "OPENAI", DEFAULT_OPENAI_MODEL
+            )
 
             prompt = (
                 f"{sys_prompt}\n\n=== QUESTION SET ===\n"
@@ -200,7 +203,7 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
-                temperature=0.2,
+                **chat_completion_options(model, temperature=0.2),
             )
             result_data = json.loads(response.choices[0].message.content or "{}")
 
@@ -215,9 +218,20 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
                 ProcessCandidate,
             )
 
-            prompt_tokens, completion_tokens, cached_tokens = extract_openai_usage(response)
+            (
+                prompt_tokens,
+                completion_tokens,
+                cached_tokens,
+                cache_write_tokens,
+                reasoning_tokens,
+            ) = extract_openai_usage(response)
             evaluation_cost = calculate_openai_cost(
-                model, prompt_tokens, completion_tokens, cached_tokens
+                model,
+                prompt_tokens,
+                completion_tokens,
+                cached_tokens,
+                cache_write_tokens,
+                reasoning_tokens,
             )
             pc = db.get(ProcessCandidate, profiling_run.process_candidate_id)
             process = db.get(HiringProcess, pc.process_id) if pc else None

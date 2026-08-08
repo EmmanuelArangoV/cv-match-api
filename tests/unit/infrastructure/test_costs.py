@@ -1,4 +1,5 @@
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,6 +10,8 @@ from src.infrastructure.costs import (
     calculate_r2_cost,
     calculate_twilio_cost,
     extract_elevenlabs_llm_usage,
+    extract_openai_usage,
+    has_openai_pricing,
 )
 
 
@@ -25,9 +28,43 @@ def test_openai_cached_tokens_use_discounted_rate() -> None:
     assert cost.amount_usd == Decimal("3.000000000")
 
 
+def test_luna_tracks_cached_writes_and_reasoning_with_verified_rates() -> None:
+    cost = calculate_openai_cost(
+        "gpt-5.6-luna",
+        1_000_000,
+        200_000,
+        cached_input_tokens=300_000,
+        cache_write_tokens=100_000,
+        reasoning_tokens=50_000,
+    )
+
+    assert cost.amount_usd == Decimal("0.391000000")
+    assert cost.breakdown["reasoning_tokens"] == 50_000
+    assert cost.breakdown["pricing_verified_at"] == "2026-08-08"
+    assert cost.breakdown["pricing_source_url"].endswith("/models/gpt-5.6-luna")
+    assert has_openai_pricing("gpt-5.6-luna") is True
+
+
+def test_openai_usage_extracts_all_billable_token_categories() -> None:
+    response = SimpleNamespace(
+        usage=SimpleNamespace(
+            prompt_tokens=123,
+            completion_tokens=45,
+            prompt_tokens_details=SimpleNamespace(
+                cached_tokens=20,
+                cache_write_tokens=10,
+            ),
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=12),
+        )
+    )
+
+    assert extract_openai_usage(response) == (123, 45, 20, 10, 12)
+
+
 def test_unknown_openai_model_is_not_silently_priced_as_gpt4o() -> None:
     with pytest.raises(ValueError, match="No hay tarifa configurada"):
         calculate_openai_cost("modelo-inventado", 100, 20)
+    assert has_openai_pricing("modelo-inventado") is False
 
 
 def test_embedding_cost_is_preserved_below_six_decimals() -> None:

@@ -22,14 +22,44 @@ from src.infrastructure.db.models import CostLog
 _USD_QUANTUM = Decimal("0.000000001")
 _ONE_MILLION = Decimal(1_000_000)
 
-# Tarifas estándar por 1M tokens. Se mantienen explícitas: un modelo desconocido no
-# debe heredar silenciosamente el precio de gpt-4o.
-_OPENAI_TOKEN_RATES: dict[str, tuple[Decimal, Decimal, Decimal]] = {
-    "gpt-4o": (Decimal("2.50"), Decimal("1.25"), Decimal("10.00")),
-    "gpt-4o-2024-08-06": (Decimal("2.50"), Decimal("1.25"), Decimal("10.00")),
-    "gpt-4o-2024-11-20": (Decimal("2.50"), Decimal("1.25"), Decimal("10.00")),
-    "text-embedding-3-small": (Decimal("0.02"), Decimal("0.00"), Decimal("0.00")),
+# Tarifas estándar por 1M tokens: entrada, entrada cacheada, salida y escritura
+# de cache. Un modelo desconocido nunca hereda silenciosamente otro precio.
+_OPENAI_TOKEN_RATES: dict[str, tuple[Decimal, Decimal, Decimal, Decimal]] = {
+    "gpt-5.6-luna": (
+        Decimal("0.20"),
+        Decimal("0.02"),
+        Decimal("1.20"),
+        Decimal("0.25"),
+    ),
+    "gpt-4o": (Decimal("2.50"), Decimal("1.25"), Decimal("10.00"), Decimal("2.50")),
+    "gpt-4o-2024-08-06": (
+        Decimal("2.50"),
+        Decimal("1.25"),
+        Decimal("10.00"),
+        Decimal("2.50"),
+    ),
+    "gpt-4o-2024-11-20": (
+        Decimal("2.50"),
+        Decimal("1.25"),
+        Decimal("10.00"),
+        Decimal("2.50"),
+    ),
+    "text-embedding-3-small": (
+        Decimal("0.02"),
+        Decimal("0.00"),
+        Decimal("0.00"),
+        Decimal("0.02"),
+    ),
 }
+
+_OPENAI_PRICING_SOURCES = {
+    "gpt-5.6-luna": "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+    "gpt-4o": "https://developers.openai.com/api/docs/pricing",
+    "gpt-4o-2024-08-06": "https://developers.openai.com/api/docs/pricing",
+    "gpt-4o-2024-11-20": "https://developers.openai.com/api/docs/pricing",
+    "text-embedding-3-small": "https://developers.openai.com/api/docs/pricing",
+}
+_OPENAI_PRICING_VERIFIED_AT = "2026-08-08"
 
 _TWILIO_CO_MOBILE_PER_MINUTE = Decimal("0.0377")
 _TWILIO_AMD_PER_CALL = Decimal("0.0075")
@@ -57,20 +87,33 @@ def calculate_openai_cost(
     input_tokens: int,
     output_tokens: int = 0,
     cached_input_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    reasoning_tokens: int = 0,
 ) -> CostCalculation:
     """Calcula costo estándar y falla explícitamente si el modelo no tiene tarifa."""
     if model not in _OPENAI_TOKEN_RATES:
         raise ValueError(f"No hay tarifa configurada para el modelo {model}")
-    if min(input_tokens, output_tokens, cached_input_tokens) < 0:
+    if min(
+        input_tokens,
+        output_tokens,
+        cached_input_tokens,
+        cache_write_tokens,
+        reasoning_tokens,
+    ) < 0:
         raise ValueError("Los tokens no pueden ser negativos")
-    if cached_input_tokens > input_tokens:
-        raise ValueError("Los tokens cacheados no pueden superar los tokens de entrada")
+    if cached_input_tokens + cache_write_tokens > input_tokens:
+        raise ValueError(
+            "Los tokens cacheados y escritos no pueden superar los tokens de entrada"
+        )
+    if reasoning_tokens > output_tokens:
+        raise ValueError("Los tokens de razonamiento no pueden superar los tokens de salida")
 
-    input_rate, cached_rate, output_rate = _OPENAI_TOKEN_RATES[model]
-    uncached = input_tokens - cached_input_tokens
+    input_rate, cached_rate, output_rate, cache_write_rate = _OPENAI_TOKEN_RATES[model]
+    uncached = input_tokens - cached_input_tokens - cache_write_tokens
     amount = (
         (Decimal(uncached) * input_rate)
         + (Decimal(cached_input_tokens) * cached_rate)
+        + (Decimal(cache_write_tokens) * cache_write_rate)
         + (Decimal(output_tokens) * output_rate)
     ) / _ONE_MILLION
     return CostCalculation(
@@ -79,23 +122,51 @@ def calculate_openai_cost(
         breakdown={
             "input_tokens": input_tokens,
             "cached_input_tokens": cached_input_tokens,
+            "cache_write_tokens": cache_write_tokens,
             "output_tokens": output_tokens,
+            "reasoning_tokens": reasoning_tokens,
             "input_usd_per_million": float(input_rate),
             "cached_input_usd_per_million": float(cached_rate),
+            "cache_write_usd_per_million": float(cache_write_rate),
             "output_usd_per_million": float(output_rate),
+            "pricing_source_url": _OPENAI_PRICING_SOURCES[model],
+            "pricing_verified_at": _OPENAI_PRICING_VERIFIED_AT,
         },
     )
 
 
-def extract_openai_usage(response: Any) -> tuple[int, int, int]:
+def has_openai_pricing(model: str) -> bool:
+    return model in _OPENAI_TOKEN_RATES
+
+
+def extract_openai_usage(response: Any) -> tuple[int, int, int, int, int]:
     usage = getattr(response, "usage", None)
     if not usage:
-        return 0, 0, 0
+        return 0, 0, 0, 0, 0
     input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
     output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
-    details = getattr(usage, "prompt_tokens_details", None)
-    cached_tokens = int(getattr(details, "cached_tokens", 0) or 0) if details else 0
-    return input_tokens, output_tokens, cached_tokens
+    prompt_details = getattr(usage, "prompt_tokens_details", None)
+    cached_tokens = (
+        int(getattr(prompt_details, "cached_tokens", 0) or 0) if prompt_details else 0
+    )
+    cache_write_tokens = (
+        int(getattr(prompt_details, "cache_write_tokens", 0) or 0)
+        if prompt_details
+        else 0
+    )
+    completion_details = getattr(usage, "completion_tokens_details", None)
+    reasoning_tokens = (
+        int(getattr(completion_details, "reasoning_tokens", 0) or 0)
+        if completion_details
+        else 0
+    )
+    return (
+        input_tokens,
+        output_tokens,
+        cached_tokens,
+        cache_write_tokens,
+        reasoning_tokens,
+    )
 
 
 def calculate_elevenlabs_cost(metadata: dict[str, Any]) -> CostCalculation:

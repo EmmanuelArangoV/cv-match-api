@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.domain.shared.exceptions import BusinessRuleException
+from src.infrastructure.ai.model_compat import DEFAULT_OPENAI_MODEL, chat_completion_options
 from src.infrastructure.ai.prompts import (
     JD_ANALYZE_ENHANCE_SYSTEM_PROMPT,
     build_jd_analyze_enhance_messages,
@@ -49,10 +50,12 @@ class ParseJobDescriptionUseCase:
         system_prompt = await get_active_ai_prompt(
             db, "JD_ENHANCEMENT", JD_ANALYZE_ENHANCE_SYSTEM_PROMPT
         )
-        model = await get_active_ai_model(db, "JD_ENHANCEMENT", "OPENAI", "gpt-4o")
+        model = await get_active_ai_model(
+            db, "JD_ENHANCEMENT", "OPENAI", DEFAULT_OPENAI_MODEL
+        )
 
         try:
-            response = await self.ai.chat.completions.create(
+            response = await self.ai.chat.completions.create(  # type: ignore[call-overload]
                 model=model,
                 messages=build_jd_analyze_enhance_messages(
                     raw_text,
@@ -63,15 +66,28 @@ class ParseJobDescriptionUseCase:
                     system_prompt=system_prompt,
                 ),
                 response_format={"type": "json_object"},
-                temperature=0.4,
+                **chat_completion_options(model, temperature=0.4),
             )
         except Exception as exc:
             raise BusinessRuleException(
                 f"No se pudo analizar la Job Description con IA: {exc}"
             ) from exc
 
-        tokens_in, tokens_out, cached_tokens = extract_openai_usage(response)
-        cost = calculate_openai_cost(model, tokens_in, tokens_out, cached_tokens)
+        (
+            tokens_in,
+            tokens_out,
+            cached_tokens,
+            cache_write_tokens,
+            reasoning_tokens,
+        ) = extract_openai_usage(response)
+        cost = calculate_openai_cost(
+            model,
+            tokens_in,
+            tokens_out,
+            cached_tokens,
+            cache_write_tokens,
+            reasoning_tokens,
+        )
         await record_cost_async(
             db,
             process_id=process_id,

@@ -65,3 +65,31 @@ async def test_async_amd_keeps_human_call_connected(monkeypatch) -> None:
     assert result == {"status": "ok"}
     assert run.amd_result == "human"
     end_call.assert_not_called()
+
+
+def test_async_amd_flag_alone_does_not_imply_media_stream() -> None:
+    run = SimpleNamespace(
+        status="CALLING",
+        elevenlabs_conversation_id=None,
+    )
+
+    assert webhooks._used_media_stream(run) is False
+
+
+@pytest.mark.parametrize("status", ["ANSWERED", "COMPLETED"])
+def test_answered_or_completed_call_confirms_media_stream(status: str) -> None:
+    run = SimpleNamespace(
+        status=status,
+        elevenlabs_conversation_id=None,
+    )
+
+    assert webhooks._used_media_stream(run) is True
+
+
+def test_elevenlabs_conversation_confirms_media_stream() -> None:
+    run = SimpleNamespace(
+        status="CALLING",
+        elevenlabs_conversation_id="conv-test",
+    )
+
+    assert webhooks._used_media_stream(run) is True
