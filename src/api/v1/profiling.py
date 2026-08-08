@@ -109,10 +109,7 @@ async def trigger_profiling(
     process = await db.get(HiringProcess, process_id)
     if not process:
         raise NotFoundException("Proceso no encontrado")
-    if (
-        current_user.role == UserRole.RECRUITER.value
-        and process.recruiter_id != current_user.id
-    ):
+    if current_user.role == UserRole.RECRUITER.value and process.recruiter_id != current_user.id:
         raise NotFoundException("Proceso no encontrado")
 
     HiringProcessRules.require_active_process(ProcessStatus(process.status))
@@ -148,6 +145,13 @@ async def trigger_profiling(
             .with_for_update()
         )
         if active_run:
+            if active_run.status == ProfilingRunStatus.PENDING.value:
+                try:
+                    send_whatsapp_consent.delay(str(active_run.id))
+                    created_runs.append(active_run)
+                    continue
+                except Exception:
+                    pass
             skipped.append(
                 {
                     "process_candidate_id": str(pc.id),
@@ -219,9 +223,7 @@ async def trigger_profiling(
                 task = start_profiling_call.delay(str(run.id))
         except Exception:
             locked_run = await db.scalar(
-                select(ProfilingRun)
-                .where(ProfilingRun.id == run.id)
-                .with_for_update()
+                select(ProfilingRun).where(ProfilingRun.id == run.id).with_for_update()
             )
             locked_pc = await db.get(ProcessCandidate, run.process_candidate_id)
             if locked_run and locked_pc:
@@ -265,8 +267,7 @@ async def list_profiling_runs(
 ) -> dict:
     process = await db.get(HiringProcess, process_id)
     if not process or (
-        current_user.role == UserRole.RECRUITER.value
-        and process.recruiter_id != current_user.id
+        current_user.role == UserRole.RECRUITER.value and process.recruiter_id != current_user.id
     ):
         raise NotFoundException("Proceso no encontrado")
     result = await db.execute(
@@ -318,10 +319,15 @@ async def list_all_profiling_runs(
 @global_router.get("/board")
 async def get_profiling_board(
     timeframe: str = "today",
+    process_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Tablero global: una tarjeta por candidato, no una tarjeta por intento."""
+    """Tablero global: una tarjeta por candidato, no una tarjeta por intento.
+
+    `process_id` filtra a un solo proceso; si el caller es RECRUITER, el filtro por
+    dueño de abajo ya lo limita a los suyos aunque pase el id de un proceso ajeno
+    (la query simplemente no devuelve nada, sin necesitar una validación aparte)."""
 
     query = (
         select(ProcessCandidate)
@@ -334,6 +340,8 @@ async def get_profiling_board(
     )
     if current_user.role == UserRole.RECRUITER.value:
         query = query.where(HiringProcess.recruiter_id == current_user.id)
+    if process_id is not None:
+        query = query.where(ProcessCandidate.process_id == process_id)
 
     candidates = list((await db.execute(query)).scalars().all())
     # El global es exclusivamente de profiling. Una corrida historica basta para
@@ -448,8 +456,7 @@ async def get_profiling_run(
 
     process = await db.get(HiringProcess, run.process_candidate.process_id)
     if not process or (
-        current_user.role == UserRole.RECRUITER.value
-        and process.recruiter_id != current_user.id
+        current_user.role == UserRole.RECRUITER.value and process.recruiter_id != current_user.id
     ):
         raise NotFoundException("ProfilingRun no encontrado")
     await _ensure_run_transcript_and_answers(db, run)
@@ -468,9 +475,7 @@ async def get_candidate_profiling_history(
         .join(HiringProcess, ProcessCandidate.process_id == HiringProcess.id)
         .where(ProfilingRun.process_candidate_id == process_candidate_id)
         .options(
-            selectinload(ProfilingRun.process_candidate).selectinload(
-                ProcessCandidate.candidate
-            )
+            selectinload(ProfilingRun.process_candidate).selectinload(ProcessCandidate.candidate)
         )
         .order_by(ProfilingRun.created_at.desc())
     )
@@ -505,7 +510,9 @@ async def get_profiling_run_audio(
 
     def _fetch_audio() -> bytes:
         client = get_elevenlabs_client()
-        chunks = client.conversational_ai.conversations.audio.get(run.elevenlabs_conversation_id)
+        chunks = client.conversational_ai.conversations.audio.get(
+            conversation_id=run.elevenlabs_conversation_id
+        )
         return b"".join(chunks)
 
     try:
@@ -597,8 +604,7 @@ async def cancel_profiling_run(
     pc = run.process_candidate
     process = await db.get(HiringProcess, pc.process_id) if pc else None
     if not process or (
-        current_user.role == UserRole.RECRUITER.value
-        and process.recruiter_id != current_user.id
+        current_user.role == UserRole.RECRUITER.value and process.recruiter_id != current_user.id
     ):
         raise NotFoundException("ProfilingRun no encontrado")
 
@@ -639,8 +645,7 @@ async def override_profiling_run(
 
     process = await db.get(HiringProcess, run.process_candidate.process_id)
     if not process or (
-        current_user.role == UserRole.RECRUITER.value
-        and process.recruiter_id != current_user.id
+        current_user.role == UserRole.RECRUITER.value and process.recruiter_id != current_user.id
     ):
         raise NotFoundException("ProfilingRun no encontrado")
 

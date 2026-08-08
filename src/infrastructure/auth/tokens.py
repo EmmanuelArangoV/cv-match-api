@@ -1,7 +1,8 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError
 
 from src.config import settings
 from src.domain.shared.exceptions import UnauthorizedException
@@ -19,7 +20,7 @@ def create_access_token(user_id: str, role: str) -> str:
 def decode_access_token(token: str) -> dict:
     try:
         return jwt.decode(token, settings.app_secret_key, algorithms=[_ALGORITHM])
-    except JWTError:
+    except InvalidTokenError:
         raise UnauthorizedException("Token inválido o expirado")
 
 

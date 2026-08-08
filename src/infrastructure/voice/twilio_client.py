@@ -1,9 +1,9 @@
 """
 Cliente de Twilio para llamadas salientes de profiling.
 
-Dispara la llamada directamente contra la API REST de Twilio con AMD sincrono
-(MachineDetection=Enable): asi ElevenLabs solo entra a la linea cuando Twilio ya
-confirmo que contesto un humano, y los buzones de voz no generan costo de agente.
+Dispara la llamada directamente contra la API REST de Twilio. AMD sincrono puede
+habilitarse por configuracion para que ElevenLabs solo entre a la linea cuando
+Twilio confirme que contesto un humano.
 Patron tomado del proyecto de referencia RiwiCalls/SofIA (twilio/client.js).
 """
 
@@ -27,18 +27,24 @@ def _get_client() -> TwilioRestClient:
 
 
 def create_outbound_call(to_phone: str, run_id: str) -> str:
-    """Dispara la llamada saliente con AMD sincrono. Retorna el CallSid de Twilio."""
+    """Dispara una llamada saliente y retorna el CallSid de Twilio."""
     base_url = settings.public_base_url.rstrip("/")
-    call = _get_client().calls.create(
-        to=to_phone,
-        from_=settings.twilio_from_number,
-        url=f"{base_url}/api/v1/webhooks/twilio/twiml?run_id={run_id}",
-        status_callback=f"{base_url}/api/v1/webhooks/twilio/status?run_id={run_id}",
-        status_callback_event=["completed"],
-        machine_detection="Enable",
-        machine_detection_timeout=settings.machine_detection_timeout,
-        timeout=settings.twilio_ring_timeout_seconds,
-    )
+    call_params = {
+        "to": to_phone,
+        "from_": settings.twilio_from_number,
+        "url": f"{base_url}/api/v1/webhooks/twilio/twiml?run_id={run_id}",
+        "status_callback": f"{base_url}/api/v1/webhooks/twilio/status?run_id={run_id}",
+        "status_callback_event": ["completed"],
+        "timeout": settings.twilio_ring_timeout_seconds,
+    }
+    if settings.twilio_machine_detection_enabled:
+        # AMD sincrono: Twilio espera la clasificacion antes de solicitar el TwiML.
+        call_params.update(
+            machine_detection="Enable",
+            machine_detection_timeout=settings.machine_detection_timeout,
+        )
+
+    call = _get_client().calls.create(**call_params)
     logger.info(f"[twilio] llamada saliente creada sid={call.sid} run_id={run_id}")
     return str(call.sid)
 

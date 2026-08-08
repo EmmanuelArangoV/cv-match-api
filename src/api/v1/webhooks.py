@@ -145,7 +145,6 @@ async def receive_whatsapp_message(
 
 _TWIML_HANGUP = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
 _MACHINE_ANSWERED_BY = {
-    "machine_start",
     "machine_end_beep",
     "machine_end_silence",
     "machine_end_other",
@@ -413,6 +412,11 @@ async def elevenlabs_post_call_webhook(
     dynamic_variables = client_data.get("dynamic_variables", {}) or {}
     twilio_call_sid = dynamic_variables.get("twilio_call_sid")
 
+    if not twilio_call_sid:
+        metadata = data.get("metadata", {}) or {}
+        phone_call = metadata.get("phone_call", {}) or {}
+        twilio_call_sid = phone_call.get("call_sid") or metadata.get("call_sid")
+
     profiling_run = None
     if twilio_call_sid:
         result = await db.execute(
@@ -457,21 +461,25 @@ async def elevenlabs_post_call_webhook(
     formatted_turns = []
     for t in raw_transcript:
         if isinstance(t, dict):
-            formatted_turns.append(
-                {
-                    "role": t.get("role", "user"),
-                    "message": t.get("message") or t.get("text") or "",
-                    "time_in_call_secs": t.get("time_in_call_secs") or t.get("time_in_call"),
-                }
-            )
+            msg = (t.get("message") or t.get("text") or "").strip()
+            if msg:
+                formatted_turns.append(
+                    {
+                        "role": t.get("role", "user"),
+                        "message": msg,
+                        "time_in_call_secs": t.get("time_in_call_secs") or t.get("time_in_call"),
+                    }
+                )
         elif hasattr(t, "role"):
-            formatted_turns.append(
-                {
-                    "role": getattr(t, "role", "user"),
-                    "message": getattr(t, "message", "") or "",
-                    "time_in_call_secs": getattr(t, "time_in_call_secs", None),
-                }
-            )
+            msg = (getattr(t, "message", "") or "").strip()
+            if msg:
+                formatted_turns.append(
+                    {
+                        "role": getattr(t, "role", "user"),
+                        "message": msg,
+                        "time_in_call_secs": getattr(t, "time_in_call_secs", None),
+                    }
+                )
 
     transcript_text = _format_transcript_text(formatted_turns)
 

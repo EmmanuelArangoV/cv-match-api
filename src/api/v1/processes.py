@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import io
 import uuid
@@ -237,9 +238,11 @@ async def list_processes(
 
     # El estado listado es una proyección del pipeline real. Se sincroniza aquí para
     # reparar procesos que no hayan recibido un evento desde una ejecución antigua.
-    progress_by_process: dict[uuid.UUID, dict] = {}
-    for process in processes:
-        progress_by_process[process.id] = (await sync_process_status(db, process.id)).as_dict()
+    if processes:
+        sync_results = await asyncio.gather(*[sync_process_status(db, p.id) for p in processes])
+        progress_by_process = {p.id: res.as_dict() for p, res in zip(processes, sync_results)}
+    else:
+        progress_by_process = {}
     await db.commit()
 
     return {
@@ -302,6 +305,7 @@ async def get_process(
         "question_set_id": str(process.question_set_id) if process.question_set_id else None,
         "voice_override_system_prompt": process.voice_override_system_prompt,
         "voice_override_first_message": process.voice_override_first_message,
+        "voice_override_language": process.voice_override_language,
         "job_description": {
             "jd_id": str(active_jd.id),
             "version": active_jd.version,
@@ -351,8 +355,14 @@ async def update_process_question_set(
         raise NotFoundException("Set de preguntas no encontrado")
 
     cloned = await _clone_question_set(question_set, db)
-    process.question_set_id = cloned.id
+    # sync_process_status ANTES de mutar process: internamente accede a
+    # process.updated_at/created_at desde una función sync (build_process_progress).
+    # Si ya hay un cambio pendiente en `process` (onupdate=func.now() en updated_at),
+    # el autoflush de la siguiente query expira ese atributo y el acceso sync explota
+    # con sqlalchemy.exc.MissingGreenlet. Mutar después de sincronizar evita el autoflush
+    # a mitad de sync_process_status.
     await sync_process_status(db, process_id)
+    process.question_set_id = cloned.id
     await db.commit()
 
     return {

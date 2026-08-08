@@ -172,20 +172,31 @@ def _call_openai(
 
 
 def _build_extraction_prompt(prompt: str, analysis_context: str | None) -> str:
-    """Añade el comentario del recruiter al prompt sin alterar el prompt configurable."""
+    """Añade el comentario del recruiter al prompt sin alterar el prompt configurable.
+
+    OJO: la regla #2 del prompt base ("Never invent or guess data") es la primera
+    instrucción fuerte que ve el modelo, y compite directamente con "usa esta nota
+    como fuente prioritaria" si no se aclara explícitamente la excepción — el modelo
+    tiende a tratar cualquier dato que no esté en el CV como una "invención" y
+    descarta la corrección del recruiter en vez de aplicarla. Por eso el bloque de
+    abajo nombra la regla #2 y aclara que esta nota no cae en esa categoría.
+    """
     context = (analysis_context or "").strip()
     if not context:
         return prompt
 
     return f"""{prompt}
 
-=== INFORMACIÓN ADICIONAL DEL RECRUITER ===
+=== INFORMACIÓN ADICIONAL DEL RECRUITER (verificada, no es una suposición) ===
 {context}
 
-Usa esta información como fuente prioritaria cuando indique explícitamente datos
-de identidad o contacto del candidato, especialmente si el CV no los contiene o
-se leen con dificultad. No inventes datos que no aparezcan ni en el CV ni en este
-comentario. Conserva el resto de la información respaldada por el CV.
+Esta nota es una corrección verificada por el reclutador, no una invención ni una
+suposición del modelo — la regla "Never invent or guess data" NO aplica a los datos
+de identidad o contacto que esta nota corrija o complete explícitamente (ej. nombre,
+teléfono, email, ubicación). Cuando esta nota contradiga o complete lo que aparece
+en el CV para esos campos, usa el valor de la nota, no el del CV. Para el resto de
+los campos del esquema (experiencia, educación, skills, etc.), sigue basándote
+únicamente en el contenido del CV.
 """
 
 

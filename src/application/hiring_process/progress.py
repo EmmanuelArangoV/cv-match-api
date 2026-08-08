@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -149,7 +149,7 @@ class CandidatePipelineProjection:
             "board_column": self.board_column,
             "state_label": self.state_label,
             "candidate_status": str(pc.status),
-            "whatsapp_consent_status": str(pc.whatsapp_consent_status),
+            "whatsapp_consent_status": pc.effective_whatsapp_consent_status,
             "latest_run": (
                 {
                     "id": str(run.id),
@@ -549,6 +549,15 @@ async def get_process_progress(db: AsyncSession, process_id: Any) -> ProcessProg
             select(func.count(JobDescription.id)).where(JobDescription.process_id == process_id)
         )
     )
+    # build_process_progress es sync y accede a process.updated_at/created_at. Si el
+    # autoflush de alguna de las queries de arriba disparó el UPDATE de un cambio
+    # pendiente en `process` (p. ej. un campo asignado por el caller antes de llamar
+    # aquí), SQLAlchemy expira updated_at (tiene onupdate=func.now(), lo recalcula la
+    # DB) y el acceso sync a un atributo expirado revienta con
+    # sqlalchemy.exc.MissingGreenlet. Refrescar explícitamente en un contexto async
+    # evita que ningún caller futuro reintroduzca este bug.
+    if inspect(process).expired:
+        await db.refresh(process)
     return build_process_progress(process, candidates, runs, has_job_description)
 
 

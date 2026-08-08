@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from src.api import readiness
 from src.api.v1 import (
     ai_config,
     audit,
@@ -105,6 +106,7 @@ app.include_router(notifications.router, prefix="/api/v1")
 app.include_router(reports.router, prefix="/api/v1")
 app.include_router(search.router, prefix="/api/v1")
 app.include_router(system.router, prefix="/api/v1")
+app.include_router(readiness.router)
 
 if not settings.is_production:
     app.include_router(debug.router, prefix="/api/v1")

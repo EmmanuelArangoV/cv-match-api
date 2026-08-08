@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.deps import RequireRecruiter, RequireRecruiterWithQuery, get_current_user
 from src.application.cv.use_cases import AnalyzeCVsUseCase, UploadCVsUseCase
 from src.application.hiring_process.progress import sync_process_status
+from src.domain.candidate.state_machine import CandidateStateMachine
 from src.domain.hiring_process.rules import HiringProcessRules
 from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
 from src.infrastructure.db.database import get_db
@@ -163,9 +164,10 @@ async def list_candidates(
             "status": pc.status,
             "match_percentage": float(pc.match_percentage),
             "match_category": pc.match_category,
-            "whatsapp_consent": pc.whatsapp_consent_status,
+            "whatsapp_consent": pc.effective_whatsapp_consent_status,
             "normalized_cv_url": pc.candidate.normalized_cv_url,
             "total_cost": round(cost_by_candidate.get(pc.candidate_id, 0.0), 6),
+            "availability_preference": pc.availability_preference,
         }
         # Profile fields from normalized CV
         profile = pc.candidate.normalized_cv or {}
@@ -223,7 +225,8 @@ async def get_candidate_detail(
             "profile": candidate.normalized_cv,
         },
         "status": pc.status,
-        "whatsapp_consent": pc.whatsapp_consent_status,
+        "whatsapp_consent": pc.effective_whatsapp_consent_status,
+        "availability_preference": pc.availability_preference,
         "analysis_context": pc.analysis_context,
         "human_notes": pc.human_notes,
         "human_override_match": float(pc.human_override_match) if pc.human_override_match else None,
@@ -481,3 +484,58 @@ async def delete_candidate(
     await db.commit()
 
     return {"status": "deleted", "process_candidate_id": str(process_candidate_id)}
+
+
+@router.patch("/{process_id}/candidates/{process_candidate_id}/discard")
+async def discard_candidate(
+    process_id: uuid.UUID,
+    process_candidate_id: uuid.UUID,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Descarta un candidato del ranking sin borrar sus datos (RB-008: siempre reversible).
+
+    Solo es una transición válida desde MATCHED o PROFILING_FAILED (ver
+    CandidateStateMachine). En cualquier otro estado devuelve 422 — el frontend debe
+    ofrecer el borrado físico (DELETE) como alternativa en ese caso.
+    """
+    repo = CandidateRepository(db)
+    pc = await repo.find_process_candidate_by_id(process_candidate_id)
+
+    if not pc or pc.process_id != process_id:
+        raise NotFoundException("Candidato no encontrado en este proceso")
+
+    target = CandidateStateMachine.transition(CandidateStatus(pc.status), CandidateStatus.DISCARDED)
+    pc.status = target.value
+
+    from src.infrastructure.db.audit import record_audit
+
+    record_audit(db, current_user.id, "DISCARD_CANDIDATE", "ProcessCandidate", pc.id)
+    await db.commit()
+
+    return {"status": "discarded", "process_candidate_id": str(process_candidate_id)}
+
+
+@router.patch("/{process_id}/candidates/{process_candidate_id}/restore")
+async def restore_discarded_candidate(
+    process_id: uuid.UUID,
+    process_candidate_id: uuid.UUID,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Revierte un descarte (RB-008: DISCARDED -> MATCHED)."""
+    repo = CandidateRepository(db)
+    pc = await repo.find_process_candidate_by_id(process_candidate_id)
+
+    if not pc or pc.process_id != process_id:
+        raise NotFoundException("Candidato no encontrado en este proceso")
+
+    target = CandidateStateMachine.transition(CandidateStatus(pc.status), CandidateStatus.MATCHED)
+    pc.status = target.value
+
+    from src.infrastructure.db.audit import record_audit
+
+    record_audit(db, current_user.id, "RESTORE_DISCARDED_CANDIDATE", "ProcessCandidate", pc.id)
+    await db.commit()
+
+    return {"status": "restored", "process_candidate_id": str(process_candidate_id)}

@@ -95,5 +95,9 @@ def test_extraction_prompt_adds_recruiter_context_with_priority_rules() -> None:
     assert prompt.startswith("prompt base")
     assert "INFORMACIÓN ADICIONAL DEL RECRUITER" in prompt
     assert "El nombre es Juan Pérez." in prompt
-    assert "fuente prioritaria" in prompt
-    assert "No inventes datos" in prompt
+    # La nota debe neutralizar explícitamente la regla "Never invent or guess data"
+    # del prompt base — de lo contrario el modelo la trata como una invención y la
+    # descarta, que era exactamente el bug reportado (la corrección no se aplicaba).
+    assert "Never invent or guess data" in prompt
+    assert "no una invención" in prompt
+    assert "usa el valor de la nota" in prompt
