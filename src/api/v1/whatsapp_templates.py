@@ -77,7 +77,17 @@ class CreateWhatsAppTemplateRequest(BaseModel):
     variable_examples: dict[str, str] = Field(default_factory=dict)
 
 
-def _build_meta_payload(body: CreateWhatsAppTemplateRequest) -> tuple[dict, dict]:
+def _normalize_status(value: Any) -> WhatsAppTemplateStatus:
+    raw_status = str(value or WhatsAppTemplateStatus.UNKNOWN.value).upper()
+    try:
+        return WhatsAppTemplateStatus(raw_status)
+    except ValueError:
+        return WhatsAppTemplateStatus.UNKNOWN
+
+
+def _build_meta_payload(
+    body: CreateWhatsAppTemplateRequest,
+) -> tuple[dict[str, Any], dict[str, dict[str, str]]]:
     name = body.name.strip()
     if not _NAME_RE.fullmatch(name):
         raise BusinessRuleException(
@@ -138,7 +148,7 @@ def _build_meta_payload(body: CreateWhatsAppTemplateRequest) -> tuple[dict, dict
 async def list_admin_templates(
     current_user: User = RequireAdmin,
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     rows = (
         (await db.execute(select(WhatsAppTemplate).order_by(WhatsAppTemplate.created_at.desc())))
         .scalars()
@@ -151,7 +161,7 @@ async def list_admin_templates(
 async def list_selectable_templates(
     current_user: User = RequireRecruiter,
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     rows = (
         (
             await db.execute(
@@ -176,7 +186,7 @@ async def create_template(
     body: CreateWhatsAppTemplateRequest,
     current_user: User = RequireAdmin,
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     payload, bindings = _build_meta_payload(body)
     existing = await db.scalar(
         select(WhatsAppTemplate).where(
@@ -194,7 +204,7 @@ async def create_template(
         name=payload["name"],
         language=payload["language"],
         category="UTILITY",
-        status=WhatsAppTemplateStatus.SUBMITTING.value,
+        status=WhatsAppTemplateStatus.SUBMITTING,
         components=payload["components"],
         variable_bindings=bindings,
         is_enabled=False,
@@ -207,14 +217,16 @@ async def create_template(
     try:
         remote = await whatsapp_client.create_template(payload)
     except Exception as exc:
-        template.status = WhatsAppTemplateStatus.SUBMISSION_FAILED.value
+        template.status = WhatsAppTemplateStatus.SUBMISSION_FAILED
         template.rejection_reason = str(exc)[:2000]
         template.last_synced_at = datetime.now(UTC)
         await db.commit()
         raise
 
     template.meta_template_id = str(remote.get("id") or "") or None
-    template.status = str(remote.get("status") or WhatsAppTemplateStatus.PENDING.value).upper()
+    template.status = _normalize_status(
+        remote.get("status") or WhatsAppTemplateStatus.PENDING.value
+    )
     template.category = str(remote.get("category") or "UTILITY").upper()
     template.last_synced_at = datetime.now(UTC)
     record_audit(
@@ -234,7 +246,7 @@ async def create_template(
 async def sync_templates(
     current_user: User = RequireAdmin,
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     remote_rows = await whatsapp_client.list_templates()
     now = datetime.now(UTC)
     created = 0
@@ -245,7 +257,7 @@ async def sync_templates(
         language = str(remote.get("language") or "")
         if not name or not language:
             continue
-        conditions = [
+        conditions: list[Any] = [
             (WhatsAppTemplate.name == name) & (WhatsAppTemplate.language == language)
         ]
         if remote_id:
@@ -257,7 +269,7 @@ async def sync_templates(
                 name=name,
                 language=language,
                 category=str(remote.get("category") or "UTILITY").upper(),
-                status=str(remote.get("status") or WhatsAppTemplateStatus.UNKNOWN.value).upper(),
+                status=_normalize_status(remote.get("status")),
                 components=remote.get("components") or [],
                 variable_bindings={},
                 is_enabled=False,
@@ -269,9 +281,7 @@ async def sync_templates(
         else:
             template.meta_template_id = remote_id or template.meta_template_id
             template.category = str(remote.get("category") or template.category).upper()
-            template.status = str(
-                remote.get("status") or WhatsAppTemplateStatus.UNKNOWN.value
-            ).upper()
+            template.status = _normalize_status(remote.get("status"))
             template.components = remote.get("components") or template.components
             template.rejection_reason = remote.get("rejected_reason")
             updated += 1
@@ -303,7 +313,7 @@ async def update_template(
     body: UpdateWhatsAppTemplateRequest,
     current_user: User = RequireAdmin,
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     template = await db.get(WhatsAppTemplate, template_id)
     if not template:
         raise NotFoundException("Plantilla de WhatsApp no encontrada")

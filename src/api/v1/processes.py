@@ -706,7 +706,7 @@ async def assign_process_whatsapp_template(
     body: UpdateWhatsAppTemplateAssignmentRequest,
     current_user: User = RequireRecruiter,
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     process = await db.get(HiringProcess, process_id)
     if not process:
         raise NotFoundException("Proceso no encontrado")

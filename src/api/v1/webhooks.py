@@ -133,7 +133,10 @@ async def receive_whatsapp_message(
 
                 from sqlalchemy import or_, select
 
-                from src.infrastructure.db.models import WhatsAppTemplate
+                from src.infrastructure.db.models import (
+                    WhatsAppTemplate,
+                    WhatsAppTemplateStatus,
+                )
 
                 meta_id = str(value.get("message_template_id") or "")
                 name = str(value.get("message_template_name") or "")
@@ -151,7 +154,11 @@ async def receive_whatsapp_message(
                         select(WhatsAppTemplate).where(or_(*conditions))
                     )
                     if template:
-                        template.status = str(value.get("event") or "UNKNOWN").upper()
+                        raw_status = str(value.get("event") or "UNKNOWN").upper()
+                        try:
+                            template.status = WhatsAppTemplateStatus(raw_status)
+                        except ValueError:
+                            template.status = WhatsAppTemplateStatus.UNKNOWN
                         template.rejection_reason = value.get("reason")
                         template.last_synced_at = datetime.now(UTC)
                         if template.status != "APPROVED":
