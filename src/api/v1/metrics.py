@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
@@ -6,9 +7,40 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import RequireRecruiter
 from src.infrastructure.db.database import get_db
-from src.infrastructure.db.models import CostLog, HiringProcess, User
+from src.infrastructure.db.models import CostLog, HiringProcess, User, UserRole
 
 router = APIRouter(prefix="/metrics", tags=["Metrics"])
+
+
+@router.get("/home")
+async def get_home_metrics(
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, object]:
+    """Costo mensual y tendencia corta para Inicio, sin cargar el dashboard financiero."""
+
+    now = datetime.now(UTC)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    trend_start = (now - timedelta(days=13)).replace(hour=0, minute=0, second=0, microsecond=0)
+    query_start = min(month_start, trend_start)
+    filters = [CostLog.created_at >= query_start]
+    daily_query = select(
+        func.date_trunc("day", CostLog.created_at).label("day"),
+        func.sum(CostLog.estimated_cost),
+    ).select_from(CostLog)
+    if current_user.role == UserRole.RECRUITER.value:
+        filters.append(HiringProcess.recruiter_id == current_user.id)
+        daily_query = daily_query.join(HiringProcess, CostLog.process_id == HiringProcess.id)
+
+    daily_result = await db.execute(daily_query.where(*filters).group_by("day").order_by("day"))
+    daily_rows = daily_result.all()
+    monthly_cost = sum(float(total) for day, total in daily_rows if day >= month_start)
+    daily_costs = [
+        {"date": day.date().isoformat(), "cost": float(total)}
+        for day, total in daily_rows
+        if day >= trend_start
+    ]
+    return {"monthly_cost_usd": monthly_cost, "daily_costs": daily_costs}
 
 
 @router.get("/dashboard")

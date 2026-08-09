@@ -38,6 +38,7 @@ def _serialize_prompt(p: AIPrompt) -> dict:
         "task_type": p.task_type,
         "version_name": p.version_name,
         "system_prompt_text": p.system_prompt_text,
+        "first_message_text": p.first_message_text,
         "is_active": p.is_active,
         "updated_by": str(p.updated_by) if p.updated_by else None,
         "created_at": p.created_at.isoformat(),
@@ -152,6 +153,7 @@ class CreatePromptRequest(BaseModel):
     task_type: str
     version_name: str
     system_prompt_text: str
+    first_message_text: str | None = None
     activate: bool = False
 
 
@@ -173,6 +175,11 @@ async def create_prompt(
         task_type=body.task_type,
         version_name=body.version_name,
         system_prompt_text=body.system_prompt_text,
+        first_message_text=(
+            body.first_message_text.strip()
+            if body.task_type == "VOICE_CALL_AGENT" and body.first_message_text
+            else None
+        ),
         is_active=body.activate,
         updated_by=current_user.id,
     )

@@ -1,4 +1,3 @@
-import asyncio
 import csv
 import io
 import uuid
@@ -6,7 +5,7 @@ from typing import Any
 
 import fitz  # pymupdf
 from docx import Document as DocxDocument
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -20,7 +19,10 @@ from src.api.deps import (
 )
 from src.application.hiring_process.jd_parse_usecase import ParseJobDescriptionUseCase
 from src.application.hiring_process.progress import (
+    PROCESS_STAGE_LABELS,
     build_candidate_projections,
+    get_process_progress_batch,
+    process_stage_sql_expression,
     sync_process_status,
 )
 from src.domain.hiring_process.rules import HiringProcessRules
@@ -103,10 +105,9 @@ class UpdateQuestionSetAssignmentRequest(BaseModel):
 
 
 class UpdateVoiceConfigRequest(BaseModel):
-    """Ajustes técnicos de voz para este proceso; el prompt se gestiona por separado."""
+    """Ajustes técnicos de voz; saludo e instrucciones se versionan por separado."""
 
     voice_override_agent_id: str | None = None
-    voice_override_first_message: str | None = None
     voice_override_language: str | None = None
     voice_override_llm_model: str | None = None
     voice_override_voice_id: str | None = None
@@ -129,6 +130,7 @@ class UpdateProcessStatusRequest(BaseModel):
 
 class CreateProcessPromptRequest(BaseModel):
     system_prompt_text: str = Field(..., min_length=1, max_length=50_000)
+    first_message_text: str | None = Field(default=None, max_length=10_000)
 
 
 def _require_process_prompt_editor(process: HiringProcess, current_user: User) -> None:
@@ -141,6 +143,15 @@ def _require_process_prompt_editor(process: HiringProcess, current_user: User) -
     raise ForbiddenException(
         "Solo el recruiter responsable o un administrador puede editar prompts."
     )
+
+
+def _require_process_prompt_task(task_type: AITaskType) -> None:
+    from src.application.ai.process_prompt_resolver import PROCESS_PROMPT_TASKS
+
+    if task_type.value not in PROCESS_PROMPT_TASKS:
+        raise BusinessRuleException(
+            "Este prompt es global y solo puede administrarse desde los ajustes de Admin."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -209,8 +220,8 @@ async def create_process(
     db.add(process)
     await db.flush()
 
-    # Las plantillas globales se copian al crear el proceso. A partir de aquí cada revisión
-    # pertenece exclusivamente al proceso y no cambia cuando Admin publique otra plantilla.
+    # Solo WhatsApp y agente de llamada pertenecen al proceso. Extraccion, match, mejora de JD
+    # y evaluacion de profiling siempre resuelven la version global activa en runtime.
     from src.application.ai.process_prompt_resolver import seed_process_prompts
 
     await seed_process_prompts(db, process.id, current_user.id)
@@ -265,14 +276,12 @@ async def list_processes(
     result = await db.execute(query)
     processes = list(result.scalars().all())
 
-    # El estado listado es una proyección del pipeline real. Se sincroniza aquí para
-    # reparar procesos que no hayan recibido un evento desde una ejecución antigua.
-    if processes:
-        sync_results = await asyncio.gather(*[sync_process_status(db, p.id) for p in processes])
-        progress_by_process = {p.id: res.as_dict() for p, res in zip(processes, sync_results)}
-    else:
-        progress_by_process = {}
-    await db.commit()
+    # Esta ruta se conserva por compatibilidad, pero ya no reconcilia ni escribe. La proyeccion
+    # se carga en bloque; los consumidores nuevos deben preferir /home u /options.
+    progress_by_process = {
+        process_id: progress.as_dict()
+        for process_id, progress in (await get_process_progress_batch(db, processes)).items()
+    }
 
     return {
         "total": len(processes),
@@ -292,6 +301,184 @@ async def list_processes(
             }
             for p in processes
         ],
+    }
+
+
+@router.get("/home")
+async def list_home_processes(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    stage: str | None = Query(default=None),
+    recruiter_id: uuid.UUID | None = Query(default=None),
+    area: str | None = Query(default=None, min_length=1, max_length=100),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Listado paginado del inicio, sin reconciliaciones ni escrituras en la base de datos."""
+
+    allowed_stages = set(PROCESS_STAGE_LABELS)
+    if stage and stage not in allowed_stages:
+        raise BusinessRuleException("La etapa seleccionada no es válida.")
+
+    role_filters: list[Any] = []
+    if current_user.role == UserRole.RECRUITER.value:
+        role_filters.append(HiringProcess.recruiter_id == current_user.id)
+
+    filters = list(role_filters)
+    if recruiter_id and current_user.role != UserRole.RECRUITER.value:
+        filters.append(HiringProcess.recruiter_id == recruiter_id)
+    if area:
+        filters.append(HiringProcess.area == area)
+
+    stage_expression = process_stage_sql_expression()
+    if stage in (ProcessStatus.CLOSED.value, ProcessStatus.ARCHIVED.value):
+        # Estos estados terminales son persistidos y no necesitan evaluar la proyeccion CASE.
+        filters.append(HiringProcess.status == stage)
+    elif stage:
+        filters.append(stage_expression == stage)
+    else:
+        # Cerrados y archivados siguen disponibles desde el filtro de etapa, pero no ralentizan
+        # ni distraen la vista operativa inicial.
+        filters.append(
+            HiringProcess.status.notin_((ProcessStatus.CLOSED.value, ProcessStatus.ARCHIVED.value))
+        )
+
+    summary_row = (
+        await db.execute(
+            select(
+                func.count(HiringProcess.id.distinct()),
+                func.count(HiringProcess.id.distinct()).filter(
+                    HiringProcess.status.notin_(
+                        (ProcessStatus.CLOSED.value, ProcessStatus.ARCHIVED.value)
+                    )
+                ),
+                func.count(ProcessCandidate.id).filter(
+                    ProcessCandidate.status.notin_(("LOADED", "CV_PROCESSING", "CV_ERROR"))
+                ),
+                func.count(ProcessCandidate.id).filter(
+                    ProcessCandidate.status == "PROFILING_COMPLETED"
+                ),
+            )
+            .select_from(HiringProcess)
+            .outerjoin(ProcessCandidate, ProcessCandidate.process_id == HiringProcess.id)
+            .where(*filters)
+        )
+    ).one()
+    total = int(summary_row[0] or 0)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    effective_page = min(page, total_pages)
+    page_rows = (
+        await db.execute(
+            select(
+                HiringProcess,
+                User.name,
+                User.last_name,
+                select(JobDescription.id)
+                .where(JobDescription.process_id == HiringProcess.id)
+                .exists()
+                .label("has_job_description"),
+            )
+            .join(User, User.id == HiringProcess.recruiter_id)
+            .where(*filters)
+            .order_by(HiringProcess.created_at.desc())
+            .offset((effective_page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+    processes = [row[0] for row in page_rows]
+    recruiter_names = {row[0].id: f"{row[1]} {row[2]}".strip() for row in page_rows}
+    has_job_description = {row[0].id: bool(row[3]) for row in page_rows}
+    progress_by_process = {
+        process_id: progress.as_dict()
+        for process_id, progress in (
+            await get_process_progress_batch(db, processes, has_job_description)
+        ).items()
+    }
+
+    option_rows = (
+        await db.execute(
+            select(
+                HiringProcess.area,
+                User.id,
+                User.name,
+                User.last_name,
+            )
+            .join(User, User.id == HiringProcess.recruiter_id)
+            .where(*role_filters)
+            .distinct()
+        )
+    ).all()
+    areas = sorted({row.area for row in option_rows})
+    recruiters = sorted(
+        {(str(row.id), f"{row.name} {row.last_name}".strip()) for row in option_rows},
+        key=lambda item: item[1].casefold(),
+    )
+
+    return {
+        "items": [
+            {
+                "process_id": str(process.id),
+                "name": process.name,
+                "job_title": process.job_title,
+                "area": process.area,
+                "seniority": process.seniority,
+                "status": process.status,
+                "budget_max_usd": float(process.budget_max_usd),
+                "recruiter_id": str(process.recruiter_id),
+                "recruiter_name": recruiter_names[process.id],
+                "created_at": process.created_at.isoformat(),
+                "progress": progress_by_process[process.id],
+            }
+            for process in processes
+        ],
+        "pagination": {
+            "page": effective_page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+        },
+        "summary": {
+            "active_processes": int(summary_row[1] or 0),
+            "cv_processed": int(summary_row[2] or 0),
+            "profiling_completed": int(summary_row[3] or 0),
+        },
+        "filter_options": {
+            "areas": areas,
+            "recruiters": [
+                {"id": recruiter_option_id, "name": name}
+                for recruiter_option_id, name in recruiters
+            ],
+        },
+    }
+
+
+@router.get("/options")
+async def list_process_options(
+    include_inactive: bool = Query(default=False),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Opciones livianas para selectores; no carga candidatos, corridas ni progreso."""
+
+    filters: list[Any] = []
+    if current_user.role == UserRole.RECRUITER.value:
+        filters.append(HiringProcess.recruiter_id == current_user.id)
+    if not include_inactive:
+        filters.append(
+            HiringProcess.status.notin_((ProcessStatus.CLOSED.value, ProcessStatus.ARCHIVED.value))
+        )
+    rows = (
+        await db.execute(
+            select(HiringProcess.id, HiringProcess.name, HiringProcess.status)
+            .where(*filters)
+            .order_by(HiringProcess.name)
+        )
+    ).all()
+    return {
+        "processes": [
+            {"process_id": str(process_id), "name": name, "status": status}
+            for process_id, name, status in rows
+        ]
     }
 
 
@@ -409,10 +596,10 @@ async def update_process_voice_config(
     process = await db.get(HiringProcess, process_id)
     if not process:
         raise NotFoundException("Proceso no encontrado")
+    _require_process_prompt_editor(process, current_user)
 
     for field in (
         "voice_override_agent_id",
-        "voice_override_first_message",
         "voice_override_language",
         "voice_override_llm_model",
         "voice_override_voice_id",
@@ -420,9 +607,8 @@ async def update_process_voice_config(
         "voice_override_tts_speed",
         "voice_override_tts_similarity_boost",
     ):
-        value = getattr(body, field)
-        if value is not None:
-            setattr(process, field, value)
+        if field in body.model_fields_set:
+            setattr(process, field, getattr(body, field))
 
     await db.commit()
     await db.refresh(process)
@@ -431,7 +617,6 @@ async def update_process_voice_config(
         field: getattr(process, field)
         for field in (
             "voice_override_agent_id",
-            "voice_override_first_message",
             "voice_override_language",
             "voice_override_llm_model",
             "voice_override_voice_id",
@@ -449,6 +634,7 @@ def _serialize_process_prompt(prompt: ProcessAIPrompt) -> dict:
         "task_type": str(prompt.task_type),
         "version_name": prompt.version_name,
         "system_prompt_text": prompt.system_prompt_text,
+        "first_message_text": prompt.first_message_text,
         "source_prompt_id": str(prompt.source_prompt_id) if prompt.source_prompt_id else None,
         "is_active": prompt.is_active,
         "created_by": str(prompt.created_by) if prompt.created_by else None,
@@ -469,12 +655,19 @@ async def list_process_prompts(
         raise NotFoundException("Proceso no encontrado")
 
     rows = (
-        await db.execute(
-            select(ProcessAIPrompt)
-            .where(ProcessAIPrompt.process_id == process_id)
-            .order_by(ProcessAIPrompt.task_type, ProcessAIPrompt.created_at.desc())
+        (
+            await db.execute(
+                select(ProcessAIPrompt)
+                .where(
+                    ProcessAIPrompt.process_id == process_id,
+                    ProcessAIPrompt.task_type.in_(("WHATSAPP_MESSAGE", "VOICE_CALL_AGENT")),
+                )
+                .order_by(ProcessAIPrompt.task_type, ProcessAIPrompt.created_at.desc())
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return {"prompts": [_serialize_process_prompt(row) for row in rows]}
 
 
@@ -490,19 +683,24 @@ async def create_process_prompt(
     if not process:
         raise NotFoundException("Proceso no encontrado")
     _require_process_prompt_editor(process, current_user)
+    _require_process_prompt_task(task_type)
 
     from src.application.ai.process_prompt_resolver import next_process_prompt_version
     from src.infrastructure.db.audit import record_audit
 
     active_rows = (
-        await db.execute(
-            select(ProcessAIPrompt).where(
-                ProcessAIPrompt.process_id == process_id,
-                ProcessAIPrompt.task_type == task_type.value,
-                ProcessAIPrompt.is_active.is_(True),
+        (
+            await db.execute(
+                select(ProcessAIPrompt).where(
+                    ProcessAIPrompt.process_id == process_id,
+                    ProcessAIPrompt.task_type == task_type.value,
+                    ProcessAIPrompt.is_active.is_(True),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     for active in active_rows:
         active.is_active = False
     # Libera primero el índice parcial de la revisión activa antes de insertar la nueva.
@@ -513,6 +711,11 @@ async def create_process_prompt(
         task_type=task_type.value,
         version_name=await next_process_prompt_version(db, process_id, task_type.value),
         system_prompt_text=body.system_prompt_text.strip(),
+        first_message_text=(
+            body.first_message_text.strip()
+            if task_type == AITaskType.VOICE_CALL_AGENT and body.first_message_text
+            else None
+        ),
         source_prompt_id=None,
         is_active=True,
         created_by=current_user.id,
@@ -544,6 +747,7 @@ async def restore_process_prompt_template(
     if not process:
         raise NotFoundException("Proceso no encontrado")
     _require_process_prompt_editor(process, current_user)
+    _require_process_prompt_task(task_type)
 
     template = await db.scalar(
         select(AIPrompt).where(AIPrompt.task_type == task_type.value, AIPrompt.is_active.is_(True))
@@ -555,14 +759,18 @@ async def restore_process_prompt_template(
     from src.infrastructure.db.audit import record_audit
 
     active_rows = (
-        await db.execute(
-            select(ProcessAIPrompt).where(
-                ProcessAIPrompt.process_id == process_id,
-                ProcessAIPrompt.task_type == task_type.value,
-                ProcessAIPrompt.is_active.is_(True),
+        (
+            await db.execute(
+                select(ProcessAIPrompt).where(
+                    ProcessAIPrompt.process_id == process_id,
+                    ProcessAIPrompt.task_type == task_type.value,
+                    ProcessAIPrompt.is_active.is_(True),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     for active in active_rows:
         active.is_active = False
     # Libera primero el índice parcial de la revisión activa antes de insertar la nueva.
@@ -575,6 +783,9 @@ async def restore_process_prompt_template(
             f"· {template.version_name}"
         ),
         system_prompt_text=template.system_prompt_text,
+        first_message_text=(
+            template.first_message_text if task_type == AITaskType.VOICE_CALL_AGENT else None
+        ),
         source_prompt_id=template.id,
         is_active=True,
         created_by=current_user.id,

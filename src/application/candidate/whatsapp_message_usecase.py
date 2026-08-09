@@ -305,10 +305,10 @@ class ProcessWhatsAppMessageUseCase:
             )
             return
 
-        from src.application.ai.process_prompt_resolver import get_process_prompt
+        from src.application.ai.process_prompt_resolver import get_effective_prompt
 
         prompt_template = (
-            await get_process_prompt(self.db, process.id, "WHATSAPP_MESSAGE")
+            await get_effective_prompt(self.db, process.id, "WHATSAPP_MESSAGE")
         ).system_prompt_text
         # Solo sustituimos las variables soportadas. Así un recruiter puede escribir llaves
         # literales en su texto sin provocar un KeyError ni ejecutar formato arbitrario.

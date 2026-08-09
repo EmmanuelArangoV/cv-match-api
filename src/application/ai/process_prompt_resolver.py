@@ -1,4 +1,4 @@
-"""Resuelve y versiona prompts que pertenecen exclusivamente a un proceso."""
+"""Resuelve prompts globales y revisiones de comunicacion propias del proceso."""
 
 from __future__ import annotations
 
@@ -18,7 +18,16 @@ from src.infrastructure.ai.prompts import (
 )
 from src.infrastructure.db.models import AIPrompt, AITaskType, ProcessAIPrompt
 
-PROCESS_PROMPT_TASKS = tuple(task.value for task in AITaskType)
+GLOBAL_RUNTIME_PROMPT_TASKS = (
+    AITaskType.CV_EXTRACTION.value,
+    AITaskType.CV_MATCH.value,
+    AITaskType.JD_ENHANCEMENT.value,
+    AITaskType.VOICE_PROFILING.value,
+)
+PROCESS_PROMPT_TASKS = (
+    AITaskType.WHATSAPP_MESSAGE.value,
+    AITaskType.VOICE_CALL_AGENT.value,
+)
 
 
 def _fallback_prompt(task_type: str) -> str:
@@ -41,10 +50,10 @@ def _fallback_prompt(task_type: str) -> str:
 async def seed_process_prompts(
     db: AsyncSession, process_id: uuid.UUID, created_by: uuid.UUID | None
 ) -> list[ProcessAIPrompt]:
-    """Copia las plantillas activas para que el proceso no las herede en runtime."""
+    """Copia solo las plantillas de comunicacion que pertenecen al proceso."""
     templates = (
-        await db.execute(select(AIPrompt).where(AIPrompt.is_active.is_(True)))
-    ).scalars().all()
+        (await db.execute(select(AIPrompt).where(AIPrompt.is_active.is_(True)))).scalars().all()
+    )
     by_task = {str(template.task_type): template for template in templates}
     records: list[ProcessAIPrompt] = []
     for task_type in PROCESS_PROMPT_TASKS:
@@ -56,6 +65,11 @@ async def seed_process_prompts(
             system_prompt_text=(
                 template.system_prompt_text if template else _fallback_prompt(task_type)
             ),
+            first_message_text=(
+                template.first_message_text
+                if template and task_type == AITaskType.VOICE_CALL_AGENT.value
+                else None
+            ),
             source_prompt_id=template.id if template else None,
             is_active=True,
             created_by=created_by,
@@ -66,40 +80,72 @@ async def seed_process_prompts(
     return records
 
 
-async def get_process_prompt(
+async def get_effective_prompt(
     db: AsyncSession, process_id: uuid.UUID, task_type: str
-) -> ProcessAIPrompt:
-    prompt = await db.scalar(
-        select(ProcessAIPrompt).where(
-            ProcessAIPrompt.process_id == process_id,
-            ProcessAIPrompt.task_type == task_type,
-            ProcessAIPrompt.is_active.is_(True),
+) -> AIPrompt | ProcessAIPrompt:
+    prompt: AIPrompt | ProcessAIPrompt | None
+    if task_type in GLOBAL_RUNTIME_PROMPT_TASKS:
+        prompt = await db.scalar(
+            select(AIPrompt).where(
+                AIPrompt.task_type == task_type,
+                AIPrompt.is_active.is_(True),
+            )
         )
-    )
+        scope = "global"
+    elif task_type in PROCESS_PROMPT_TASKS:
+        prompt = await db.scalar(
+            select(ProcessAIPrompt).where(
+                ProcessAIPrompt.process_id == process_id,
+                ProcessAIPrompt.task_type == task_type,
+                ProcessAIPrompt.is_active.is_(True),
+            )
+        )
+        scope = "del proceso"
+    else:
+        raise BusinessRuleException(f"Tipo de prompt no soportado: {task_type}.")
     if not prompt:
         raise BusinessRuleException(
-            f"El proceso no tiene un prompt activo para {task_type}. "
-            "Restaura una plantilla antes de continuar."
+            f"No existe un prompt {scope} activo para {task_type}. "
+            "Publica o restaura una plantilla antes de continuar."
         )
     return prompt
 
 
-def get_process_prompt_sync(
+def get_effective_prompt_sync(
     db: Session, process_id: uuid.UUID, task_type: str
-) -> ProcessAIPrompt:
-    prompt = db.execute(
-        select(ProcessAIPrompt).where(
-            ProcessAIPrompt.process_id == process_id,
-            ProcessAIPrompt.task_type == task_type,
-            ProcessAIPrompt.is_active.is_(True),
-        )
-    ).scalar_one_or_none()
+) -> AIPrompt | ProcessAIPrompt:
+    prompt: AIPrompt | ProcessAIPrompt | None
+    if task_type in GLOBAL_RUNTIME_PROMPT_TASKS:
+        prompt = db.execute(
+            select(AIPrompt).where(
+                AIPrompt.task_type == task_type,
+                AIPrompt.is_active.is_(True),
+            )
+        ).scalar_one_or_none()
+        scope = "global"
+    elif task_type in PROCESS_PROMPT_TASKS:
+        prompt = db.execute(
+            select(ProcessAIPrompt).where(
+                ProcessAIPrompt.process_id == process_id,
+                ProcessAIPrompt.task_type == task_type,
+                ProcessAIPrompt.is_active.is_(True),
+            )
+        ).scalar_one_or_none()
+        scope = "del proceso"
+    else:
+        raise BusinessRuleException(f"Tipo de prompt no soportado: {task_type}.")
     if not prompt:
         raise BusinessRuleException(
-            f"El proceso no tiene un prompt activo para {task_type}. "
-            "Restaura una plantilla antes de continuar."
+            f"No existe un prompt {scope} activo para {task_type}. "
+            "Publica o restaura una plantilla antes de continuar."
         )
     return prompt
+
+
+# Alias transitorios para consumidores externos; dentro del backend se usa el nombre
+# explicito porque cuatro tareas ya no pertenecen al proceso.
+get_process_prompt = get_effective_prompt
+get_process_prompt_sync = get_effective_prompt_sync
 
 
 async def next_process_prompt_version(

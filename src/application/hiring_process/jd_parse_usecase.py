@@ -43,10 +43,10 @@ class ParseJobDescriptionUseCase:
         process_id: uuid.UUID,
         user_id: uuid.UUID,
     ) -> dict:
-        from src.application.ai.process_prompt_resolver import get_process_prompt
+        from src.application.ai.process_prompt_resolver import get_effective_prompt
 
         system_prompt = (
-            await get_process_prompt(db, process_id, "JD_ENHANCEMENT")
+            await get_effective_prompt(db, process_id, "JD_ENHANCEMENT")
         ).system_prompt_text
         model = await get_active_ai_model(
             db, "JD_ENHANCEMENT", "OPENAI", DEFAULT_OPENAI_MODEL

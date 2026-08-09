@@ -2,13 +2,14 @@
 Resuelve la configuracion de voz (ElevenLabs) efectiva para una llamada de profiling.
 
 Precedencia técnica: HiringProcess.voice_override_* (si no es None) > QuestionSet.default_*
-(si no es None) > settings.elevenlabs_agent_id. El prompt no participa en esa cadena: llega
-como una revisión propia y obligatoria del proceso.
+(si no es None) > settings.elevenlabs_agent_id. El prompt y el saludo llegan como una misma
+revisión propia del proceso; la columna histórica del saludo solo queda como fallback de rollback.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 from src.config import settings
 from src.infrastructure.db.models import HiringProcess, ProfilingQuestion, QuestionSet, QuestionType
@@ -29,6 +30,9 @@ class VoiceCallConfig:
 
 def _pick(override: object | None, default: object | None) -> object | None:
     return override if override is not None else default
+
+
+_FIRST_MESSAGE_NOT_VERSIONED = object()
 
 
 _QUESTION_TYPE_HINTS: dict[QuestionType, str] = {
@@ -84,6 +88,7 @@ def resolve_voice_config(
     process: HiringProcess,
     whatsapp_consent_status: str | None = None,
     process_prompt: str | None = None,
+    process_first_message: object = _FIRST_MESSAGE_NOT_VERSIONED,
 ) -> VoiceCallConfig:
     questions_block = (
         _build_questions_block(question_set.questions) if question_set.questions else None
@@ -96,17 +101,21 @@ def resolve_voice_config(
         if whatsapp_consent_status is not None
         else None
     )
-    system_prompt = "\n\n".join(
-        p for p in (process_prompt, consent_note, questions_block) if p
+    system_prompt = "\n\n".join(p for p in (process_prompt, consent_note, questions_block) if p)
+    # Un caller antiguo que omite el argumento conserva la columna legacy para rollback. Cuando
+    # el caller trae una revision (incluso con NULL), esa revision manda: NULL significa usar el
+    # saludo del set, no resucitar un override oculto que el usuario ya quitó de la interfaz.
+    first_message = (
+        _pick(process.voice_override_first_message, question_set.default_first_message)
+        if process_first_message is _FIRST_MESSAGE_NOT_VERSIONED
+        else _pick(process_first_message, question_set.default_first_message)
     )
 
     return VoiceCallConfig(
         agent_id=_pick(process.voice_override_agent_id, question_set.default_agent_id)
         or settings.elevenlabs_agent_id,
         system_prompt=system_prompt,
-        first_message=_pick(
-            process.voice_override_first_message, question_set.default_first_message
-        ),
+        first_message=cast(str | None, first_message),
         language=_pick(process.voice_override_language, question_set.default_language),
         llm_model=_pick(process.voice_override_llm_model, question_set.default_llm_model),
         voice_id=_pick(process.voice_override_voice_id, question_set.default_voice_id),

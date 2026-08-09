@@ -58,6 +58,38 @@ def test_process_technical_override_takes_precedence_over_question_set_default()
     assert config.language == "es"
 
 
+def test_versioned_first_message_precedes_legacy_and_question_set_values():
+    config = resolve_voice_config(
+        _question_set(default_first_message="saludo-set"),
+        _process(voice_override_first_message="saludo-legado"),
+        process_prompt="prompt",
+        process_first_message="saludo-versionado",
+    )
+
+    assert config.first_message == "saludo-versionado"
+
+
+def test_empty_versioned_first_message_uses_question_set_instead_of_hidden_legacy_value():
+    config = resolve_voice_config(
+        _question_set(default_first_message="saludo-set"),
+        _process(voice_override_first_message="saludo-legado"),
+        process_prompt="prompt",
+        process_first_message=None,
+    )
+
+    assert config.first_message == "saludo-set"
+
+
+def test_omitted_versioned_first_message_keeps_legacy_fallback_for_old_callers():
+    config = resolve_voice_config(
+        _question_set(default_first_message="saludo-set"),
+        _process(voice_override_first_message="saludo-legado"),
+        process_prompt="prompt",
+    )
+
+    assert config.first_message == "saludo-legado"
+
+
 def test_adds_consent_instruction_when_status_is_known():
     config = resolve_voice_config(
         _question_set(), _process(), whatsapp_consent_status="TIMEOUT", process_prompt="prompt"

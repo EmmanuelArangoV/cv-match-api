@@ -7,14 +7,14 @@ proceso y a los contadores que consume el frontend.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, inspect, select
+from sqlalchemy import and_, case, exists, func, inspect, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from src.config import settings
 from src.domain.profiling.watchdog import is_run_stale
@@ -379,6 +379,68 @@ def derive_process_stage(
     return "CVS_PROCESSED"
 
 
+def process_stage_sql_expression() -> Any:
+    """Replica la precedencia de ``derive_process_stage`` para filtrar antes de paginar."""
+
+    candidate = aliased(ProcessCandidate)
+    run_candidate = aliased(ProcessCandidate)
+    run = aliased(ProfilingRun)
+
+    def has_candidate_status(statuses: set[str]) -> Any:
+        return exists(
+            select(1).where(
+                candidate.process_id == HiringProcess.id,
+                candidate.status.in_(statuses),
+            )
+        )
+
+    has_candidates = exists(select(1).where(candidate.process_id == HiringProcess.id))
+    has_cv_processing = has_candidate_status({CandidateStatus.CV_PROCESSING.value})
+    has_cv_error = has_candidate_status(_CV_ERROR_STATUSES)
+    has_loaded = has_candidate_status({CandidateStatus.LOADED.value})
+    has_match_processing = has_candidate_status(_MATCH_ACTIVE_STATUSES)
+    has_matched = has_candidate_status(_MATCHED_STATUSES)
+    has_profiling_active = has_candidate_status(_PROFILING_ACTIVE_CANDIDATE_STATUSES)
+    has_profiling_terminal_candidate = has_candidate_status(_PROFILING_TERMINAL_CANDIDATE_STATUSES)
+    has_terminal_run = exists(
+        select(1)
+        .select_from(run)
+        .join(run_candidate, run.process_candidate_id == run_candidate.id)
+        .where(
+            run_candidate.process_id == HiringProcess.id,
+            run.status.in_(_TERMINAL_RUN_STATUSES),
+        )
+    )
+    has_question_set = HiringProcess.question_set_id.is_not(None)
+
+    return case(
+        (HiringProcess.status.in_(_ADMIN_STATUSES), HiringProcess.status),
+        (~has_candidates, literal(ProcessStatus.DRAFT.value)),
+        (has_cv_processing, literal("CV_PROCESSING")),
+        (has_cv_error, literal("CV_ERROR")),
+        (has_loaded, literal(ProcessStatus.CVS_UPLOADED.value)),
+        (has_match_processing, literal(ProcessStatus.MATCH_PROCESSING.value)),
+        (
+            and_(has_question_set, has_matched, has_profiling_active),
+            literal(ProcessStatus.PROFILING_ACTIVE.value),
+        ),
+        (
+            and_(
+                has_question_set,
+                has_matched,
+                has_profiling_terminal_candidate | has_terminal_run,
+            ),
+            literal(ProcessStatus.PROFILING_COMPLETED.value),
+        ),
+        (
+            and_(has_question_set, has_matched),
+            literal(ProcessStatus.PROFILING_CONFIGURED.value),
+        ),
+        (has_matched, literal(ProcessStatus.MATCH_DONE.value)),
+        else_=literal("CVS_PROCESSED"),
+    )
+
+
 def derive_persisted_process_status(
     current_status: str,
     stage: str,
@@ -560,6 +622,74 @@ async def get_process_progress(db: AsyncSession, process_id: Any) -> ProcessProg
     if inspect(process).expired:
         await db.refresh(process)
     return build_process_progress(process, candidates, runs, has_job_description)
+
+
+async def get_process_progress_batch(
+    db: AsyncSession,
+    processes: Iterable[HiringProcess],
+    has_job_description_by_process: Mapping[Any, bool] | None = None,
+) -> dict[Any, ProcessProgress]:
+    """Carga la proyeccion exacta de varios procesos con hasta dos queries constantes.
+
+    La consulta de candidatos incluye sus ejecuciones de profiling. Inicio ya conoce si cada
+    proceso tiene JD mediante un ``EXISTS`` en su pagina y puede evitar la segunda consulta.
+    Los consumidores legacy que no traen ese dato conservan exactamente la misma proyeccion.
+    """
+
+    process_list = list(processes)
+    process_ids = [process.id for process in process_list]
+    if not process_ids:
+        return {}
+
+    candidate_run_rows = (
+        await db.execute(
+            select(ProcessCandidate, ProfilingRun)
+            .outerjoin(
+                ProfilingRun,
+                ProfilingRun.process_candidate_id == ProcessCandidate.id,
+            )
+            .where(ProcessCandidate.process_id.in_(process_ids))
+        )
+    ).all()
+
+    if has_job_description_by_process is None:
+        jd_process_ids = set(
+            (
+                await db.execute(
+                    select(JobDescription.process_id)
+                    .where(JobDescription.process_id.in_(process_ids))
+                    .distinct()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        has_job_description_by_process = {
+            process_id: process_id in jd_process_ids for process_id in process_ids
+        }
+
+    candidates_by_process: dict[Any, list[ProcessCandidate]] = {
+        process_id: [] for process_id in process_ids
+    }
+    runs_by_process: dict[Any, list[ProfilingRun]] = {process_id: [] for process_id in process_ids}
+    seen_candidates: set[Any] = set()
+    for candidate_item, run_item in candidate_run_rows:
+        process_id = candidate_item.process_id
+        if candidate_item.id not in seen_candidates:
+            candidates_by_process[process_id].append(candidate_item)
+            seen_candidates.add(candidate_item.id)
+        if run_item is not None:
+            runs_by_process[process_id].append(run_item)
+
+    return {
+        process.id: build_process_progress(
+            process,
+            candidates_by_process[process.id],
+            runs_by_process[process.id],
+            bool(has_job_description_by_process.get(process.id, False)),
+        )
+        for process in process_list
+    }
 
 
 def get_process_progress_sync(db: Session, process_id: Any) -> ProcessProgress:

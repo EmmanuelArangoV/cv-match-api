@@ -156,9 +156,9 @@ def execute_match(
         )
         thresholds = MatchThresholds.from_dict(raw_thresholds)
 
-        from src.application.ai.process_prompt_resolver import get_process_prompt_sync
+        from src.application.ai.process_prompt_resolver import get_effective_prompt_sync
 
-        system_prompt = get_process_prompt_sync(db, proc_uuid, "CV_MATCH").system_prompt_text
+        system_prompt = get_effective_prompt_sync(db, proc_uuid, "CV_MATCH").system_prompt_text
         model = get_active_ai_model_sync(db, "CV_MATCH", "OPENAI", DEFAULT_OPENAI_MODEL)
 
         # Llamar a OpenAI

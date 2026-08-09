@@ -82,3 +82,24 @@ def test_luna_migration_activates_all_openai_workloads_and_feedback_prompt() -> 
     }
     assert "retroalimentación breve" in migration._VOICE_PROMPT
     assert len(statements) == 8
+
+
+def test_voice_greeting_migration_backfills_only_active_call_agent_revision() -> None:
+    migration = _load_migration("c7a9e1f4b2d8_version_voice_greeting_with_prompts.py")
+    added_columns: list[tuple[str, str]] = []
+    statements: list[str] = []
+    migration.op = SimpleNamespace(
+        add_column=lambda table, column: added_columns.append((table, column.name)),
+        execute=lambda statement: statements.append(str(statement)),
+    )
+
+    migration.upgrade()
+
+    assert migration.down_revision == "b4d8e2c1f6a3"
+    assert added_columns == [
+        ("ai_prompts", "first_message_text"),
+        ("process_ai_prompts", "first_message_text"),
+    ]
+    assert len(statements) == 1
+    assert "prompt.task_type = 'VOICE_CALL_AGENT'" in statements[0]
+    assert "prompt.is_active = true" in statements[0]

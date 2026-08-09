@@ -203,10 +203,10 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
                 for q in questions
             ]
 
-            from src.application.ai.process_prompt_resolver import get_process_prompt_sync
+            from src.application.ai.process_prompt_resolver import get_effective_prompt_sync
             from src.infrastructure.cache.redis_client import get_active_ai_model_sync
 
-            sys_prompt = get_process_prompt_sync(
+            sys_prompt = get_effective_prompt_sync(
                 db, pc.process_id, "VOICE_PROFILING"
             ).system_prompt_text
             model = get_active_ai_model_sync(

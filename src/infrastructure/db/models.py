@@ -197,6 +197,9 @@ class AIPrompt(Base):
     task_type: Mapped[AITaskType] = mapped_column(String(50), nullable=False)
     version_name: Mapped[str] = mapped_column(String(100), nullable=False)
     system_prompt_text: Mapped[str] = mapped_column(TEXT, nullable=False)
+    # Solo VOICE_CALL_AGENT usa este campo. Se versiona junto al prompt para que
+    # restaurar una revision recupere tambien el saludo que oyo el candidato.
+    first_message_text: Mapped[str | None] = mapped_column(TEXT, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -228,6 +231,8 @@ class ProcessAIPrompt(Base):
     task_type: Mapped[AITaskType] = mapped_column(String(50), nullable=False)
     version_name: Mapped[str] = mapped_column(String(100), nullable=False)
     system_prompt_text: Mapped[str] = mapped_column(TEXT, nullable=False)
+    # Solo VOICE_CALL_AGENT usa este campo; WhatsApp lo mantiene en NULL.
+    first_message_text: Mapped[str | None] = mapped_column(TEXT, nullable=True)
     source_prompt_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("ai_prompts.id", ondelete="SET NULL"), nullable=True
     )

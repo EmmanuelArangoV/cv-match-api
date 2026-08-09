@@ -1,9 +1,12 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
+
 from src.application.hiring_process.progress import (
     build_process_progress,
     derive_process_stage,
+    get_process_progress_batch,
 )
 
 
@@ -22,6 +25,7 @@ def _candidate(status, candidate_id):
     now = datetime.now(UTC)
     return SimpleNamespace(
         id=candidate_id,
+        process_id="process-1",
         status=status,
         created_at=now,
         updated_at=now,
@@ -165,3 +169,58 @@ def test_closed_and_archived_are_never_overwritten_by_projection():
         )
         assert progress.stage == status
         assert progress.process_status == status
+
+
+class _JoinedRows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _BatchDB:
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = 0
+
+    async def execute(self, _statement):
+        self.calls += 1
+        return _JoinedRows(self.rows)
+
+
+@pytest.mark.asyncio
+async def test_batch_projection_does_not_duplicate_candidate_with_multiple_runs():
+    process = _process(status="PROFILING_ACTIVE", question_set_id="set-1")
+    candidate = _candidate("PROFILING_COMPLETED", "pc-1")
+    first_run = _run("COMPLETED", "pc-1")
+    second_run = _run("FAILED", "pc-1")
+    second_run.id = "run-pc-1-retry"
+    db = _BatchDB([(candidate, first_run), (candidate, second_run)])
+
+    result = await get_process_progress_batch(
+        db,
+        [process],
+        {process.id: True},
+    )
+
+    assert db.calls == 1
+    assert result[process.id].counts["total_cvs"] == 1
+    assert result[process.id].counts["profiling_runs"] == 2
+    assert result[process.id].counts["profiling_runs_terminal"] == 2
+
+
+@pytest.mark.asyncio
+async def test_batch_projection_keeps_empty_process_and_skips_jd_lookup_when_preloaded():
+    process = _process(status="DRAFT")
+    db = _BatchDB([])
+
+    result = await get_process_progress_batch(
+        db,
+        [process],
+        {process.id: False},
+    )
+
+    assert db.calls == 1
+    assert result[process.id].stage == "DRAFT"
+    assert result[process.id].counts["total_cvs"] == 0
