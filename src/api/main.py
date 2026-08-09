@@ -23,6 +23,7 @@ from src.api.v1 import (
     system,
     users,
     webhooks,
+    whatsapp_templates,
 )
 from src.config import settings
 from src.domain.shared.exceptions import (
@@ -99,6 +100,8 @@ app.include_router(profiling.router, prefix="/api/v1")
 app.include_router(profiling.global_router, prefix="/api/v1")
 app.include_router(metrics.router, prefix="/api/v1")
 app.include_router(ai_config.router, prefix="/api/v1")
+app.include_router(whatsapp_templates.admin_router, prefix="/api/v1")
+app.include_router(whatsapp_templates.router, prefix="/api/v1")
 app.include_router(users.router, prefix="/api/v1")
 app.include_router(feedback.router, prefix="/api/v1")
 app.include_router(audit.router, prefix="/api/v1")

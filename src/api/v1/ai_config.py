@@ -164,6 +164,12 @@ async def create_prompt(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Append-only: nunca se edita un prompt existente, siempre se crea una versión nueva."""
+    if not body.system_prompt_text.strip():
+        raise BusinessRuleException("El prompt del sistema no puede quedar vacío.")
+    if body.task_type == "VOICE_CALL_AGENT" and not (body.first_message_text or "").strip():
+        raise BusinessRuleException(
+            "La plantilla del agente de llamada debe incluir un saludo inicial."
+        )
     if body.activate:
         siblings = await db.execute(
             select(AIPrompt).where(AIPrompt.task_type == body.task_type, AIPrompt.is_active)
@@ -207,6 +213,10 @@ async def activate_prompt(
     prompt = await db.get(AIPrompt, prompt_id)
     if not prompt:
         raise NotFoundException("Versión de prompt no encontrada")
+    if prompt.task_type == "VOICE_CALL_AGENT" and not (prompt.first_message_text or "").strip():
+        raise BusinessRuleException(
+            "Esta versión no puede activarse porque no tiene saludo inicial."
+        )
 
     siblings = await db.execute(select(AIPrompt).where(AIPrompt.task_type == prompt.task_type))
     for sibling in siblings.scalars().all():

@@ -78,6 +78,18 @@ class WhatsAppConsentStatus(enum.StrEnum):
     TIMEOUT = "TIMEOUT"
 
 
+class WhatsAppTemplateStatus(enum.StrEnum):
+    SUBMITTING = "SUBMITTING"
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    PAUSED = "PAUSED"
+    DISABLED = "DISABLED"
+    SUBMISSION_FAILED = "SUBMISSION_FAILED"
+    DELETED = "DELETED"
+    UNKNOWN = "UNKNOWN"
+
+
 class CallConsentStatus(enum.StrEnum):
     ACCEPTED = "ACCEPTED"
     REJECTED = "REJECTED"
@@ -257,6 +269,47 @@ class GlobalBusinessSetting(Base):
     )
 
 
+class WhatsAppTemplate(Base):
+    """Plantilla de consentimiento administrada y aprobada en Meta."""
+
+    __tablename__ = "whatsapp_templates"
+    __table_args__ = (
+        UniqueConstraint("name", "language", name="uq_whatsapp_templates_name_language"),
+        Index(
+            "uq_whatsapp_templates_default",
+            "is_default",
+            unique=True,
+            postgresql_where=text("is_default"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    meta_template_id: Mapped[str | None] = mapped_column(String(100), unique=True, nullable=True)
+    name: Mapped[str] = mapped_column(String(512), nullable=False)
+    language: Mapped[str] = mapped_column(String(20), nullable=False)
+    category: Mapped[str] = mapped_column(String(30), nullable=False, default="UTILITY")
+    status: Mapped[WhatsAppTemplateStatus] = mapped_column(
+        String(30), nullable=False, default=WhatsAppTemplateStatus.SUBMITTING
+    )
+    components: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    variable_bindings: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    rejection_reason: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    processes: Mapped[list["HiringProcess"]] = relationship(back_populates="whatsapp_template")
+
+
 # Dominio: Procesos y Job Descriptions
 
 
@@ -279,11 +332,13 @@ class HiringProcess(Base):
     question_set_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("question_sets.id", ondelete="SET NULL"), nullable=True
     )
+    whatsapp_template_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("whatsapp_templates.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Override de configuracion de voz (ElevenLabs) para este proceso especifico.
     # El prompt vive en ProcessAIPrompt; estos campos solo controlan el agente y la voz.
     voice_override_agent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    voice_override_first_message: Mapped[str | None] = mapped_column(TEXT, nullable=True)
     voice_override_language: Mapped[str | None] = mapped_column(String(10), nullable=True)
     voice_override_llm_model: Mapped[str | None] = mapped_column(String(50), nullable=True)
     voice_override_voice_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -298,6 +353,9 @@ class HiringProcess(Base):
 
     recruiter: Mapped["User"] = relationship(back_populates="hiring_processes")
     question_set: Mapped["QuestionSet | None"] = relationship()
+    whatsapp_template: Mapped["WhatsAppTemplate | None"] = relationship(
+        back_populates="processes"
+    )
     job_descriptions: Mapped[list["JobDescription"]] = relationship(
         back_populates="process", order_by="JobDescription.version"
     )
@@ -435,7 +493,6 @@ class QuestionSet(Base):
     # Configuracion de voz (ElevenLabs) por defecto para los procesos que usen este set.
     # El prompt se configura por proceso; el set solo aporta configuración técnica.
     default_agent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    default_first_message: Mapped[str | None] = mapped_column(TEXT, nullable=True)
     default_language: Mapped[str | None] = mapped_column(String(10), nullable=True)
     default_llm_model: Mapped[str | None] = mapped_column(String(50), nullable=True)
     default_voice_id: Mapped[str | None] = mapped_column(String(100), nullable=True)

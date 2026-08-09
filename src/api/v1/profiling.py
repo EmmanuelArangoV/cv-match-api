@@ -36,6 +36,7 @@ from src.infrastructure.db.models import (
     UserRole,
     WhatsAppConsentStatus,
 )
+from src.infrastructure.messaging.whatsapp_client import template_bindings_are_valid
 
 router = APIRouter(prefix="/processes", tags=["Profiling"])
 global_router = APIRouter(prefix="/profiling", tags=["Profiling"])
@@ -107,7 +108,11 @@ async def trigger_profiling(
     from src.infrastructure.workers.tasks.profiling import start_profiling_call
     from src.infrastructure.workers.tasks.whatsapp import send_whatsapp_consent
 
-    process = await db.get(HiringProcess, process_id)
+    process = await db.scalar(
+        select(HiringProcess)
+        .where(HiringProcess.id == process_id)
+        .options(selectinload(HiringProcess.whatsapp_template))
+    )
     if not process:
         raise NotFoundException("Proceso no encontrado")
     if current_user.role == UserRole.RECRUITER.value and process.recruiter_id != current_user.id:
@@ -123,6 +128,19 @@ async def trigger_profiling(
     whatsapp_configured = bool(
         settings.meta_whatsapp_access_token and settings.meta_whatsapp_phone_number_id
     )
+    if whatsapp_configured and (
+        not process.whatsapp_template
+        or str(process.whatsapp_template.status) != "APPROVED"
+        or not process.whatsapp_template.is_enabled
+        or not template_bindings_are_valid(
+            process.whatsapp_template.components or [],
+            process.whatsapp_template.variable_bindings or {},
+        )
+    ):
+        raise BusinessRuleException(
+            "Selecciona una plantilla de WhatsApp aprobada, habilitada y configurada "
+            "antes de iniciar profiling."
+        )
     active_statuses = [status.value for status in ACTIVE_PROFILING_RUN_STATUSES]
 
     for pc_id in body.process_candidate_ids:

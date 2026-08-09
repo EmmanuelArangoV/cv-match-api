@@ -23,6 +23,7 @@ from elevenlabs.types import (
 
 from src.application.profiling.voice_config_resolver import VoiceCallConfig
 from src.config import settings
+from src.domain.shared.exceptions import BusinessRuleException
 
 logger = logging.getLogger(__name__)
 
@@ -123,8 +124,14 @@ def _get_allowed_overrides(agent_id: str) -> dict[str, bool]:
 
 
 def preload_agent_overrides(agent_id: str) -> None:
-    """Calienta el cache antes de marcar, nunca durante el primer audio."""
-    _get_allowed_overrides(agent_id)
+    """Calienta y valida los overrides obligatorios antes de originar la llamada."""
+    allowed = _get_allowed_overrides(agent_id)
+    missing = [key for key in ("prompt", "first_message") if not allowed[key]]
+    if missing:
+        raise BusinessRuleException(
+            "El agente de ElevenLabs debe permitir los overrides de System prompt y First message "
+            f"antes de llamar. Faltan: {', '.join(missing)}."
+        )
 
 
 def get_elevenlabs_client() -> ElevenLabs:
@@ -141,6 +148,12 @@ def _build_conversation_config_override(
     voice_config: VoiceCallConfig,
 ) -> ConversationConfigClientOverrideInput:
     allowed = _get_allowed_overrides(voice_config.agent_id)
+    missing_required = [key for key in ("prompt", "first_message") if not allowed[key]]
+    if missing_required:
+        raise BusinessRuleException(
+            "El agente de ElevenLabs no permite los overrides obligatorios: "
+            f"{', '.join(missing_required)}."
+        )
     skipped = [
         field
         for field, value in (

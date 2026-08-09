@@ -128,6 +128,37 @@ async def receive_whatsapp_message(
     for entry in body.get("entry", []):
         for change in entry.get("changes", []):
             value = change.get("value", {})
+            if change.get("field") == "message_template_status_update":
+                from datetime import UTC, datetime
+
+                from sqlalchemy import or_, select
+
+                from src.infrastructure.db.models import WhatsAppTemplate
+
+                meta_id = str(value.get("message_template_id") or "")
+                name = str(value.get("message_template_name") or "")
+                language = str(value.get("message_template_language") or "")
+                conditions = []
+                if meta_id:
+                    conditions.append(WhatsAppTemplate.meta_template_id == meta_id)
+                if name and language:
+                    conditions.append(
+                        (WhatsAppTemplate.name == name)
+                        & (WhatsAppTemplate.language == language)
+                    )
+                if conditions:
+                    template = await db.scalar(
+                        select(WhatsAppTemplate).where(or_(*conditions))
+                    )
+                    if template:
+                        template.status = str(value.get("event") or "UNKNOWN").upper()
+                        template.rejection_reason = value.get("reason")
+                        template.last_synced_at = datetime.now(UTC)
+                        if template.status != "APPROVED":
+                            template.is_enabled = False
+                            template.is_default = False
+                        await db.commit()
+                continue
             if "messages" not in value:
                 continue
             for message in value["messages"]:

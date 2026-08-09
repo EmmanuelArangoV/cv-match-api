@@ -39,9 +39,28 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _resolve_button_intent(text: str) -> str | None:
+def _resolve_button_intent(text: str, process: HiringProcess | None = None) -> str | None:
     """Si el texto es un clic de botón conocido, retorna el intent directamente."""
     normalized = text.strip().lower()
+    template = process.whatsapp_template if process else None
+    if template:
+        buttons_component = next(
+            (
+                component
+                for component in (template.components or [])
+                if str(component.get("type") or "").upper() == "BUTTONS"
+            ),
+            None,
+        )
+        quick_replies = [
+            str(button.get("text") or "").strip().lower()
+            for button in (buttons_component or {}).get("buttons", [])
+            if str(button.get("type") or "").upper() == "QUICK_REPLY"
+        ]
+        if quick_replies and normalized == quick_replies[0]:
+            return "ACCEPTED"
+        if len(quick_replies) > 1 and normalized == quick_replies[1]:
+            return "REJECTED"
     if normalized == _BUTTON_ACCEPT:
         return "ACCEPTED"
     if normalized == _BUTTON_REJECT:
@@ -264,7 +283,9 @@ class ProcessWhatsAppMessageUseCase:
                 )
             )
             .options(
-                selectinload(ProcessCandidate.process),
+                selectinload(ProcessCandidate.process).selectinload(
+                    HiringProcess.whatsapp_template
+                ),
                 selectinload(ProcessCandidate.candidate),
             )
             .order_by(ProcessCandidate.created_at.desc())
@@ -298,7 +319,7 @@ class ProcessWhatsAppMessageUseCase:
         history: list[dict] = list(pc.whatsapp_conversation or [])
 
         # Clics de botón (plantilla o interactivo) — respuesta directa sin pasar por IA
-        button_intent = _resolve_button_intent(message_text)
+        button_intent = _resolve_button_intent(message_text, process)
         if button_intent:
             await self._apply_intent(
                 pc, button_intent, None, from_phone, history=history, user_text=message_text

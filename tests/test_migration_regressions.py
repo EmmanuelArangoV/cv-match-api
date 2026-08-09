@@ -103,3 +103,16 @@ def test_voice_greeting_migration_backfills_only_active_call_agent_revision() ->
     assert len(statements) == 1
     assert "prompt.task_type = 'VOICE_CALL_AGENT'" in statements[0]
     assert "prompt.is_active = true" in statements[0]
+
+
+def test_whatsapp_template_migration_removes_question_set_greeting_fallback() -> None:
+    migration_path = (
+        MIGRATIONS_DIR / "d8f2a4c6e9b1_whatsapp_templates_and_process_greetings.py"
+    )
+    source = migration_path.read_text()
+
+    assert "op.create_table(" in source
+    assert '"whatsapp_templates"' in source
+    assert 'op.drop_column("question_sets", "default_first_message")' in source
+    assert 'op.drop_column("hiring_processes", "voice_override_first_message")' in source
+    assert "process_ai_prompts AS prompt" in source

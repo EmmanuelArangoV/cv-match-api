@@ -60,7 +60,6 @@ class UpdateQuestionSetRequest(BaseModel):
 
     # Configuracion de voz (ElevenLabs) por defecto para procesos que usen este set.
     default_agent_id: str | None = None
-    default_first_message: str | None = None
     default_language: str | None = None
     default_llm_model: str | None = None
     default_voice_id: str | None = None
@@ -125,7 +124,6 @@ def _serialize_set(qs: QuestionSet, include_questions: bool = False) -> dict:
         "created_at": qs.created_at.isoformat(),
         "updated_at": qs.updated_at.isoformat(),
         "default_agent_id": qs.default_agent_id,
-        "default_first_message": qs.default_first_message,
         "default_language": qs.default_language,
         "default_llm_model": qs.default_llm_model,
         "default_voice_id": qs.default_voice_id,
@@ -250,7 +248,6 @@ async def update_question_set(
 
     for field in (
         "default_agent_id",
-        "default_first_message",
         "default_language",
         "default_llm_model",
         "default_voice_id",
@@ -431,7 +428,6 @@ async def _clone_question_set(qs: QuestionSet, db: AsyncSession) -> QuestionSet:
         status=QuestionSetStatus.DRAFT.value,
         created_by=qs.created_by,
         default_agent_id=qs.default_agent_id,
-        default_first_message=qs.default_first_message,
         default_language=qs.default_language,
         default_llm_model=qs.default_llm_model,
         default_voice_id=qs.default_voice_id,

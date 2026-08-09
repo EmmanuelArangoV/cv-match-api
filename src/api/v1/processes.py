@@ -47,7 +47,10 @@ from src.infrastructure.db.models import (
     User,
     UserRole,
     UserStatus,
+    WhatsAppTemplate,
+    WhatsAppTemplateStatus,
 )
+from src.infrastructure.messaging.whatsapp_client import template_bindings_are_valid
 from src.infrastructure.storage import r2_client
 
 # ---------------------------------------------------------------------------
@@ -130,7 +133,10 @@ class UpdateProcessStatusRequest(BaseModel):
 
 class CreateProcessPromptRequest(BaseModel):
     system_prompt_text: str = Field(..., min_length=1, max_length=50_000)
-    first_message_text: str | None = Field(default=None, max_length=10_000)
+
+
+class UpdateWhatsAppTemplateAssignmentRequest(BaseModel):
+    template_id: uuid.UUID
 
 
 def _require_process_prompt_editor(process: HiringProcess, current_user: User) -> None:
@@ -207,6 +213,13 @@ async def create_process(
     elif current_user.role == UserRole.TA_LEADER.value:
         raise BusinessRuleException("Selecciona un recruiter responsable para crear el proceso.")
 
+    default_whatsapp_template = await db.scalar(
+        select(WhatsAppTemplate).where(
+            WhatsAppTemplate.is_default.is_(True),
+            WhatsAppTemplate.is_enabled.is_(True),
+            WhatsAppTemplate.status == WhatsAppTemplateStatus.APPROVED.value,
+        )
+    )
     process = HiringProcess(
         name=body.name,
         job_title=body.job_title,
@@ -215,6 +228,9 @@ async def create_process(
         budget_max_usd=body.budget_max_usd,
         match_weights_override=body.match_weights_override,
         recruiter_id=recruiter_id,
+        whatsapp_template_id=(
+            default_whatsapp_template.id if default_whatsapp_template else None
+        ),
         status=ProcessStatus.DRAFT.value,
     )
     db.add(process)
@@ -494,6 +510,7 @@ async def get_process(
         .options(
             selectinload(HiringProcess.job_descriptions),
             selectinload(HiringProcess.recruiter),
+            selectinload(HiringProcess.whatsapp_template),
         )
     )
     process: HiringProcess | None = result.scalar_one_or_none()
@@ -519,8 +536,20 @@ async def get_process(
         "recruiter_id": str(process.recruiter_id),
         "recruiter_name": f"{process.recruiter.name} {process.recruiter.last_name}",
         "question_set_id": str(process.question_set_id) if process.question_set_id else None,
-        "voice_override_first_message": process.voice_override_first_message,
         "voice_override_language": process.voice_override_language,
+        "whatsapp_template": (
+            {
+                "id": str(process.whatsapp_template.id),
+                "name": process.whatsapp_template.name,
+                "language": process.whatsapp_template.language,
+                "status": str(process.whatsapp_template.status),
+                "is_enabled": process.whatsapp_template.is_enabled,
+                "components": process.whatsapp_template.components or [],
+                "variable_bindings": process.whatsapp_template.variable_bindings or {},
+            }
+            if process.whatsapp_template
+            else None
+        ),
         "job_description": {
             "jd_id": str(active_jd.id),
             "version": active_jd.version,
@@ -671,6 +700,48 @@ async def list_process_prompts(
     return {"prompts": [_serialize_process_prompt(row) for row in rows]}
 
 
+@router.patch("/{process_id}/whatsapp-template")
+async def assign_process_whatsapp_template(
+    process_id: uuid.UUID,
+    body: UpdateWhatsAppTemplateAssignmentRequest,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    process = await db.get(HiringProcess, process_id)
+    if not process:
+        raise NotFoundException("Proceso no encontrado")
+    _require_process_prompt_editor(process, current_user)
+    template = await db.get(WhatsAppTemplate, body.template_id)
+    if not template:
+        raise NotFoundException("Plantilla de WhatsApp no encontrada")
+    if (
+        str(template.status) != WhatsAppTemplateStatus.APPROVED.value
+        or not template.is_enabled
+        or not template_bindings_are_valid(
+            template.components or [], template.variable_bindings or {}
+        )
+    ):
+        raise BusinessRuleException(
+            "La plantilla debe estar aprobada, habilitada y tener sus variables completas."
+        )
+    from src.api.v1.whatsapp_templates import serialize_template
+    from src.infrastructure.db.audit import record_audit
+
+    previous_id = process.whatsapp_template_id
+    process.whatsapp_template_id = template.id
+    record_audit(
+        db,
+        current_user.id,
+        "PROCESS_WHATSAPP_TEMPLATE_ASSIGNED",
+        "HiringProcess",
+        process.id,
+        old_value={"whatsapp_template_id": str(previous_id) if previous_id else None},
+        new_value={"whatsapp_template_id": str(template.id)},
+    )
+    await db.commit()
+    return {"template": serialize_template(template)}
+
+
 @router.post("/{process_id}/ai-prompts/{task_type}", status_code=201)
 async def create_process_prompt(
     process_id: uuid.UUID,
@@ -701,6 +772,14 @@ async def create_process_prompt(
         .scalars()
         .all()
     )
+    preserved_greeting = next(
+        ((row.first_message_text or "").strip() for row in active_rows if row.first_message_text),
+        "",
+    )
+    if task_type == AITaskType.VOICE_CALL_AGENT and not preserved_greeting:
+        raise BusinessRuleException(
+            "El proceso no tiene un saludo activo. Aplica primero una plantilla de Admin."
+        )
     for active in active_rows:
         active.is_active = False
     # Libera primero el índice parcial de la revisión activa antes de insertar la nueva.
@@ -712,9 +791,7 @@ async def create_process_prompt(
         version_name=await next_process_prompt_version(db, process_id, task_type.value),
         system_prompt_text=body.system_prompt_text.strip(),
         first_message_text=(
-            body.first_message_text.strip()
-            if task_type == AITaskType.VOICE_CALL_AGENT and body.first_message_text
-            else None
+            preserved_greeting if task_type == AITaskType.VOICE_CALL_AGENT else None
         ),
         source_prompt_id=None,
         is_active=True,
@@ -754,6 +831,12 @@ async def restore_process_prompt_template(
     )
     if not template:
         raise BusinessRuleException("No hay una plantilla global activa para esta tarea.")
+    if task_type == AITaskType.VOICE_CALL_AGENT and not (
+        template.first_message_text or ""
+    ).strip():
+        raise BusinessRuleException(
+            "La plantilla de Admin no tiene saludo inicial y no puede aplicarse."
+        )
 
     from src.application.ai.process_prompt_resolver import next_process_prompt_version
     from src.infrastructure.db.audit import record_audit

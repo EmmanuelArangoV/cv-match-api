@@ -51,6 +51,7 @@ class Settings(BaseSettings):
 
     # Meta WhatsApp Business
     meta_whatsapp_api_url: str = "https://graph.facebook.com/v21.0"
+    meta_whatsapp_business_account_id: str = ""
     meta_whatsapp_phone_number_id: str = ""
     meta_whatsapp_access_token: str = ""
     meta_whatsapp_verify_token: str = ""

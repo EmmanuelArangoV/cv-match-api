@@ -1,9 +1,21 @@
 import asyncio
 import uuid
+
 from sqlalchemy import select
+
 from src.infrastructure.db.database import AsyncSessionFactory
-from src.infrastructure.db.models import Candidate, HiringProcess, ProcessCandidate, WhatsAppConsentStatus, ProcessStatus, CandidateStatus, User, UserRole
+from src.infrastructure.db.models import (
+    Candidate,
+    CandidateStatus,
+    HiringProcess,
+    ProcessCandidate,
+    ProcessStatus,
+    User,
+    UserRole,
+    WhatsAppConsentStatus,
+)
 from src.infrastructure.messaging.whatsapp_client import whatsapp_client
+
 
 async def test_whatsapp(phone_number: str):
     async with AsyncSessionFactory() as session:
@@ -16,7 +28,7 @@ async def test_whatsapp(phone_number: str):
                 last_name="Test",
                 email="recruiter@test.com",
                 password_hash="hash",
-                role=UserRole.ADMIN
+                role=UserRole.ADMIN,
             )
             session.add(user)
             await session.flush()
@@ -30,7 +42,7 @@ async def test_whatsapp(phone_number: str):
             area="IT",
             seniority="Senior",
             recruiter_id=user.id,
-            status=ProcessStatus.MATCH_PROCESSING
+            status=ProcessStatus.MATCH_PROCESSING,
         )
         session.add(process)
 
@@ -42,7 +54,7 @@ async def test_whatsapp(phone_number: str):
             last_name="De Prueba",
             email=f"prueba_{candidate_id.hex[:6]}@riwi.io",
             phone=phone_number,
-            cv_file_url="test.pdf"
+            cv_file_url="test.pdf",
         )
         session.add(candidate)
 
@@ -53,7 +65,7 @@ async def test_whatsapp(phone_number: str):
             candidate_id=candidate_id,
             process_id=process_id,
             status=CandidateStatus.MATCH_PENDING,
-            whatsapp_consent_status=WhatsAppConsentStatus.PENDING
+            whatsapp_consent_status=WhatsAppConsentStatus.PENDING,
         )
         session.add(pc)
 
@@ -66,17 +78,29 @@ async def test_whatsapp(phone_number: str):
         print(f"Enviando plantilla 'autorizacion_llamada_ia_v2' a {phone_number}...")
         res = await whatsapp_client.send_consent_template(
             to_phone=phone_number,
-            candidate_name=candidate_name,
-            job_title=process.job_title,
+            template_name="autorizacion_llamada_ia_v2",
+            language="es_CO",
+            variable_bindings={"BODY": {"1": "candidate_name"}},
+            context={
+                "candidate_name": candidate_name,
+                "job_title": process.job_title,
+                "process_name": process.name,
+                "recruiter_name": "Equipo de Talent Acquisition",
+            },
         )
         print(f"Mensaje enviado! Respuesta de Meta: {res}")
-        print("\n¡Revisa tu celular! Cuando respondas el mensaje, el webhook de Ngrok lo recibirá y OpenAI te contestará.")
+        print(
+            "\n¡Revisa tu celular! Cuando respondas el mensaje, el webhook de Ngrok "
+            "lo recibirá y OpenAI te contestará."
+        )
+
 
 if __name__ == "__main__":
     import sys
+
     if len(sys.argv) < 2:
         print("Uso: python scripts/test_whatsapp.py <TU_NUMERO_CON_CODIGO_DE_PAIS>")
         print("Ejemplo: python scripts/test_whatsapp.py 573001234567")
         sys.exit(1)
-        
+
     asyncio.run(test_whatsapp(sys.argv[1]))

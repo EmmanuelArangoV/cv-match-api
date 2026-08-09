@@ -29,6 +29,11 @@ PROCESS_PROMPT_TASKS = (
     AITaskType.VOICE_CALL_AGENT.value,
 )
 
+DEFAULT_VOICE_GREETING = (
+    "Hola {{candidate_name}}, soy el asistente virtual de Riwi. Te llamo por el proceso de "
+    "{{job_title}}; gracias por atender."
+)
+
 
 def _fallback_prompt(task_type: str) -> str:
     """Fallback de bootstrap; las operaciones normales nunca llegan aquí."""
@@ -66,8 +71,8 @@ async def seed_process_prompts(
                 template.system_prompt_text if template else _fallback_prompt(task_type)
             ),
             first_message_text=(
-                template.first_message_text
-                if template and task_type == AITaskType.VOICE_CALL_AGENT.value
+                ((template.first_message_text if template else None) or DEFAULT_VOICE_GREETING)
+                if task_type == AITaskType.VOICE_CALL_AGENT.value
                 else None
             ),
             source_prompt_id=template.id if template else None,

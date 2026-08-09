@@ -18,10 +18,13 @@ _SyncSession = sessionmaker(bind=_engine)
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=60, name="send_whatsapp_consent")
 def send_whatsapp_consent(self, profiling_run_id: str) -> dict:
     from src.infrastructure.db.models import (
+        HiringProcess,
         ProcessCandidate,
         ProfilingRun,
         ProfilingRunStatus,
+        WhatsAppTemplateStatus,
     )
+    from src.infrastructure.messaging.whatsapp_client import template_bindings_are_valid
 
     run_uuid = uuid.UUID(profiling_run_id)
 
@@ -38,7 +41,10 @@ def send_whatsapp_consent(self, profiling_run_id: str) -> dict:
                     ),
                     selectinload(ProfilingRun.process_candidate).selectinload(
                         ProcessCandidate.process
-                    ),
+                    ).selectinload(HiringProcess.whatsapp_template),
+                    selectinload(ProfilingRun.process_candidate)
+                    .selectinload(ProcessCandidate.process)
+                    .selectinload(HiringProcess.recruiter),
                 )
             ).scalar_one_or_none()
 
@@ -51,14 +57,57 @@ def send_whatsapp_consent(self, profiling_run_id: str) -> dict:
             candidate = pc.candidate
             process = pc.process
 
+            from src.application.profiling.lifecycle import transition_profiling_sync
+
             if not candidate or not candidate.phone:
-                return {"skipped": "Candidato sin teléfono extraído — se omite WhatsApp"}
+                transition_profiling_sync(
+                    db,
+                    run,
+                    pc,
+                    ProfilingRunStatus.FAILED,
+                    detail="whatsapp_phone_missing",
+                )
+                db.commit()
+                return {"error": "Candidato sin teléfono para WhatsApp"}
+
+            template = process.whatsapp_template
+            if (
+                not template
+                or str(template.status) != WhatsAppTemplateStatus.APPROVED.value
+                or not template.is_enabled
+                or not template_bindings_are_valid(
+                    template.components or [], template.variable_bindings or {}
+                )
+            ):
+                transition_profiling_sync(
+                    db,
+                    run,
+                    pc,
+                    ProfilingRunStatus.FAILED,
+                    detail="whatsapp_template_unavailable",
+                )
+                db.commit()
+                return {"error": "Plantilla de WhatsApp no disponible"}
+
+            candidate_name = f"{candidate.name} {candidate.last_name}".strip()
+            recruiter_name = (
+                f"{process.recruiter.name} {process.recruiter.last_name}".strip()
+                if process.recruiter
+                else "Equipo de Talent Acquisition"
+            )
 
             res = asyncio.run(
                 whatsapp_client.send_consent_template(
                     to_phone=candidate.phone,
-                    candidate_name=f"{candidate.name} {candidate.last_name}".strip(),
-                    job_title=process.job_title,
+                    template_name=template.name,
+                    language=template.language,
+                    variable_bindings=template.variable_bindings or {},
+                    context={
+                        "candidate_name": candidate_name,
+                        "job_title": process.job_title,
+                        "process_name": process.name,
+                        "recruiter_name": recruiter_name,
+                    },
                 )
             )
 
@@ -79,7 +128,7 @@ def send_whatsapp_consent(self, profiling_run_id: str) -> dict:
                 user_id=process.recruiter_id,
                 operation_type=OperationType.WHATSAPP_MESSAGE.value,
                 provider="META",
-                model_used="meta-whatsapp-template:utility",
+                model_used=f"meta-whatsapp-template:{template.name}:{template.language}",
                 estimated_cost=message_cost.amount_usd,
                 cost_source=message_cost.source,
                 external_reference=f"meta-whatsapp:{message_id}",
@@ -90,8 +139,9 @@ def send_whatsapp_consent(self, profiling_run_id: str) -> dict:
             return {
                 "status": "sent",
                 "phone": candidate.phone,
-                "candidate": f"{candidate.name} {candidate.last_name}",
+                "candidate": candidate_name,
                 "job_title": process.job_title,
+                "template": template.name,
                 "meta_response": res,
             }
 
