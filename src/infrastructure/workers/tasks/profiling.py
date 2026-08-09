@@ -106,14 +106,26 @@ def check_stale_profiling_calls(self):
     with _SyncSession() as db:
         try:
             candidates = db.execute(
-                select(ProfilingRun.id, ProfilingRun.status, ProfilingRun.started_at).where(
+                select(
+                    ProfilingRun.id,
+                    ProfilingRun.status,
+                    ProfilingRun.started_at,
+                    ProfilingRun.created_at,
+                ).where(
                     ProfilingRun.status.in_(WATCHED_STATUSES)
                 )
             ).all()
 
             processed = []
-            for run_id, status, started_at in candidates:
-                if not is_run_stale(status, started_at, now, calling_timeout, answered_timeout):
+            for run_id, status, started_at, created_at in candidates:
+                if not is_run_stale(
+                    status,
+                    started_at,
+                    now,
+                    calling_timeout,
+                    answered_timeout,
+                    created_at=created_at,
+                ):
                     continue
 
                 locked = db.execute(
@@ -124,10 +136,18 @@ def check_stale_profiling_calls(self):
                 if not locked:
                     continue  # otro worker lo tiene bloqueado ahora mismo (p.ej. un webhook)
                 if not is_run_stale(
-                    locked.status, locked.started_at, now, calling_timeout, answered_timeout
+                    locked.status,
+                    locked.started_at,
+                    now,
+                    calling_timeout,
+                    answered_timeout,
+                    created_at=locked.created_at,
                 ):
                     continue  # se resolvio entre la lectura y el lock
 
+                # Normaliza el dato histórico antes de cerrar la corrida. No publica tareas ni
+                # repite llamadas: el watchdog siempre usa allow_retry=False.
+                locked.started_at = locked.started_at or locked.created_at
                 RetryOrFailProfilingCallUseCase(db).execute(
                     str(locked.id), "watchdog_timeout", allow_retry=False
                 )
@@ -153,7 +173,6 @@ def check_stale_profiling_calls(self):
 )
 def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: str):
     """Evalua la transcripcion de la llamada contra las preguntas del QuestionSet."""
-    from src.infrastructure.ai.prompts import PROFILING_EVALUATION_PROMPT
     from src.infrastructure.workers.tasks.parse_cv import _get_openai
 
     run_uuid = uuid.UUID(profiling_run_id)
@@ -162,6 +181,9 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
             profiling_run = db.get(ProfilingRun, run_uuid)
             if not profiling_run:
                 return {"error": "ProfilingRun not found"}
+            pc = profiling_run.process_candidate
+            if not pc:
+                return {"error": "ProcessCandidate not found"}
 
             question_set = db.get(QuestionSet, profiling_run.question_set_id)
             if not question_set:
@@ -181,14 +203,12 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
                 for q in questions
             ]
 
-            from src.infrastructure.cache.redis_client import (
-                get_active_ai_model_sync,
-                get_active_ai_prompt_sync,
-            )
+            from src.application.ai.process_prompt_resolver import get_process_prompt_sync
+            from src.infrastructure.cache.redis_client import get_active_ai_model_sync
 
-            sys_prompt = get_active_ai_prompt_sync(
-                db, "VOICE_PROFILING", PROFILING_EVALUATION_PROMPT
-            )
+            sys_prompt = get_process_prompt_sync(
+                db, pc.process_id, "VOICE_PROFILING"
+            ).system_prompt_text
             model = get_active_ai_model_sync(
                 db, "VOICE_PROFILING", "OPENAI", DEFAULT_OPENAI_MODEL
             )
@@ -215,7 +235,6 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
             from src.infrastructure.db.models import (
                 HiringProcess,
                 OperationType,
-                ProcessCandidate,
             )
 
             (
@@ -233,7 +252,6 @@ def evaluate_profiling_transcription(self, profiling_run_id: str, transcript: st
                 cache_write_tokens,
                 reasoning_tokens,
             )
-            pc = db.get(ProcessCandidate, profiling_run.process_candidate_id)
             process = db.get(HiringProcess, pc.process_id) if pc else None
             with _SyncSession() as cost_db:
                 record_cost_sync(

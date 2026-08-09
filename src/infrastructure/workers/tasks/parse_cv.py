@@ -23,7 +23,6 @@ from sqlalchemy.orm import sessionmaker
 from src.application.hiring_process.progress import sync_process_status_sync
 from src.config import settings
 from src.infrastructure.ai.model_compat import DEFAULT_OPENAI_MODEL, chat_completion_options
-from src.infrastructure.ai.prompts import CV_EXTRACTION_PROMPT
 from src.infrastructure.costs import (
     calculate_openai_cost,
     calculate_r2_cost,
@@ -275,12 +274,10 @@ def parse_cv(
 
             # Llamar a OpenAI
             openai_client = _get_openai()
-            from src.infrastructure.cache.redis_client import (
-                get_active_ai_model_sync,
-                get_active_ai_prompt_sync,
-            )
+            from src.application.ai.process_prompt_resolver import get_process_prompt_sync
+            from src.infrastructure.cache.redis_client import get_active_ai_model_sync
 
-            prompt = get_active_ai_prompt_sync(db, "CV_EXTRACTION", CV_EXTRACTION_PROMPT)
+            prompt = get_process_prompt_sync(db, proc_uuid, "CV_EXTRACTION").system_prompt_text
             prompt = _build_extraction_prompt(prompt, pc.analysis_context)
             model = get_active_ai_model_sync(
                 db, "CV_EXTRACTION", "OPENAI", DEFAULT_OPENAI_MODEL

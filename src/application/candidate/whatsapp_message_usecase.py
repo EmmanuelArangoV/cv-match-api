@@ -305,10 +305,17 @@ class ProcessWhatsAppMessageUseCase:
             )
             return
 
-        system_prompt = _AGENT_SYSTEM_PROMPT.format(
-            candidate_name=f"{candidate.name} {candidate.last_name}".strip(),
-            job_title=process.job_title,
-            consent_status=pc.whatsapp_consent_status,
+        from src.application.ai.process_prompt_resolver import get_process_prompt
+
+        prompt_template = (
+            await get_process_prompt(self.db, process.id, "WHATSAPP_MESSAGE")
+        ).system_prompt_text
+        # Solo sustituimos las variables soportadas. Así un recruiter puede escribir llaves
+        # literales en su texto sin provocar un KeyError ni ejecutar formato arbitrario.
+        system_prompt = (
+            prompt_template.replace("{candidate_name}", f"{candidate.name} {candidate.last_name}".strip())
+            .replace("{job_title}", process.job_title)
+            .replace("{consent_status}", str(pc.whatsapp_consent_status))
         )
         messages: list[ChatCompletionMessageParam] = [{"role": "system", "content": system_prompt}]
         for turn in history[-_MAX_HISTORY_TURNS:]:

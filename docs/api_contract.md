@@ -127,7 +127,8 @@ Todos requieren Bearer. Auth: `RequireRecruiter` = ADMIN/RECRUITER/TA_LEADER par
   text_preview (300 chars + "..."), jd_raw_text (completo), jd_file_url, original_filename,
   created_at`, o `null` si no hay JD. También `match_weights` (el override, no el default real
   usado por el matcher), `question_set_id` (**nuevo campo** — el set asociado, o `null`),
-  `voice_override_system_prompt`, `voice_override_first_message`, `created_at`, `updated_at`.
+  `voice_override_first_message`, `created_at`, `updated_at`. Los prompts de IA se consultan y
+  versionan en `/api/v1/processes/{process_id}/ai-prompts`.
 - 404 si no existe el proceso.
 
 ### `PATCH /api/v1/processes/{process_id}/question-set` — **nuevo endpoint**, asocia un QuestionSet
@@ -232,11 +233,11 @@ Todos requieren Bearer. Auth: `RequireRecruiter` = ADMIN/RECRUITER/TA_LEADER par
 ### `PATCH /api/v1/processes/{process_id}/voice-config` — override de voz (ElevenLabs) del proceso
 - Auth: RequireRecruiter.
 - Body (`UpdateVoiceConfigRequest`, todos opcionales, solo se aplican los no-`None`):
-  `voice_override_agent_id, voice_override_system_prompt, voice_override_first_message,
+  `voice_override_agent_id, voice_override_first_message,
   voice_override_language, voice_override_llm_model, voice_override_voice_id,
   voice_override_tts_stability (float), voice_override_tts_speed (float),
   voice_override_tts_similarity_boost (float)`.
-- 200: eco de los 9 campos actualizados (valores actuales en DB tras el patch).
+- 200: eco de los 8 campos técnicos actualizados (valores actuales en DB tras el patch).
 - 404 si el proceso no existe.
 - Estos overrides tienen prioridad sobre los `default_*` del `QuestionSet` asociado — resuelto en
   `resolve_voice_config()` (usado por el webhook `/twilio/twiml`, no por HTTP directo).
@@ -414,9 +415,9 @@ de mutación de sets/preguntas.
 
 ### `PATCH /api/v1/question-sets/{question_set_id}` — editar metadata + voz default
 - Body (`UpdateQuestionSetRequest`, todo opcional): `name?, description?, status?` (validado contra
-  `QuestionSetStatus`, 422 si inválido) + 9 campos `default_*` de voz (mismos nombres que
+  `QuestionSetStatus`, 422 si inválido) + 8 campos `default_*` de voz (mismos nombres que
   `voice-config` de processes pero sin el prefijo `voice_override_`): `default_agent_id,
-  default_system_prompt, default_first_message, default_language, default_llm_model,
+  default_first_message, default_language, default_llm_model,
   default_voice_id, default_tts_stability, default_tts_speed, default_tts_similarity_boost`.
 - 200: el set serializado **sin** `questions` (a diferencia de POST/GET que sí las incluyen —
   inconsistencia menor de shape entre endpoints del mismo recurso).
@@ -424,7 +425,7 @@ de mutación de sets/preguntas.
   último audit): si el set tiene `status == ACTIVE` **o** está referenciado por algún
   `HiringProcess.question_set_id`, el PATCH **no edita el registro original** — crea un
   `QuestionSet` nuevo (`version = actual + 1`, `status = DRAFT`, clona todas las preguntas y los
-  9 campos `default_*`) y aplica los cambios del body sobre ese clon. **El `id` que vuelve en la
+  8 campos `default_*`) y aplica los cambios del body sobre ese clon. **El `id` que vuelve en la
   respuesta puede no ser el mismo `question_set_id` que se mandó en la URL** — el frontend debe
   usar el `id` de la respuesta para operaciones subsiguientes, no asumir que es el mismo.
   **Ningún `HiringProcess` que ya apuntaba al set original se re-asocia automáticamente al
@@ -503,8 +504,8 @@ del proveedor externo. No deben llamarse desde el frontend, se documentan por co
   `PROFILING_COMPLETED`, registra `CostLog` (estimación de costo vía créditos ElevenLabs → USD,
   constante hardcodeada `_ELEVENLABS_USD_PER_MINUTE_DEFAULT = 0.09`), encola
   `evaluate_profiling_transcription` (la evaluación IA de las respuestas es asíncrona, posterior a
-  este webhook; usa `get_active_ai_prompt_sync`/`get_active_ai_model_sync` — ver hallazgo sobre
-  `ai-config` en §10/§Hallazgos).
+  este webhook; usa el prompt activo del proceso para `VOICE_PROFILING` y la configuración de
+  modelo activa — ver §10/§Hallazgos).
 
 ---
 
@@ -650,10 +651,17 @@ API, que usa `RequireRecruiter` para casi todo).
 ### `GET /api/v1/ai-config/prompts` / `POST /api/v1/ai-config/prompts` (201)
 - `AIPrompt`: append-only real (nunca se edita, cada `POST` es una versión nueva). `activate: bool`
   en el body desactiva las demás versiones activas del mismo `task_type` antes de insertar.
-- Consumidor real: `get_active_ai_prompt_sync(db, task_type, fallback)`, cacheado en Redis (TTL no
-  documentado aquí, ver `redis_client.py`), usado solo por `parse_cv` (`task_type="PROFILE_EXTRACT"`)
-  y la evaluación de profiling (`task_type="VOICE_PROFILING"`) — igual que arriba, el matching y
-  los endpoints de JD **no leen esta tabla**.
+- Son **plantillas**: se copian al crear un proceso y solo se vuelven a aplicar mediante una
+  restauración explícita. No se heredan en runtime.
+
+### `GET /api/v1/processes/{process_id}/ai-prompts`
+- Devuelve el historial append-only de las seis tareas de IA del proceso. Recruiters solo pueden
+  ver sus propios procesos; ADMIN y TA_LEADER pueden ver todos.
+
+### `POST /api/v1/processes/{process_id}/ai-prompts/{task_type}` y `/restore-template`
+- Solo el recruiter responsable o ADMIN puede crear una revisión propia o restaurar la plantilla
+  global activa. Cada operación desactiva la revisión anterior, conserva su historial y registra
+  auditoría. Los procesos `CLOSED` y `ARCHIVED` no admiten cambios.
 
 ### `GET /api/v1/ai-config/global-settings` / `PATCH /api/v1/ai-config/global-settings/{setting_key}`
 - `GlobalBusinessSetting`: upsert por `setting_key` (crea la fila si no existe — no hay seed). El

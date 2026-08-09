@@ -135,8 +135,8 @@ def test_parse_cv_registers_cost_against_deduplicated_candidate() -> None:
         patch.object(module, "upload_file_sync", return_value="cvs/existing_normalized.pdf"),
         patch.object(module, "sync_process_status_sync"),
         patch(
-            "src.infrastructure.cache.redis_client.get_active_ai_prompt_sync",
-            return_value="prompt",
+            "src.application.ai.process_prompt_resolver.get_process_prompt_sync",
+            return_value=SimpleNamespace(system_prompt_text="prompt"),
         ),
         patch(
             "src.infrastructure.cache.redis_client.get_active_ai_model_sync",

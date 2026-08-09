@@ -101,14 +101,11 @@ class InitiateProfilingCallUseCase:
 
         # Preparar todo el contexto antes de marcar. El webhook de Twilio solo
         # debe actualizar estado y devolver el TwiML de ElevenLabs.
-        from src.infrastructure.ai.prompts import VOICE_CALL_AGENT_BASE_PROMPT
-        from src.infrastructure.cache.redis_client import get_active_ai_prompt_sync
+        from src.application.ai.process_prompt_resolver import get_process_prompt_sync
 
-        universal_prompt = get_active_ai_prompt_sync(
-            self.db, "VOICE_CALL_AGENT", VOICE_CALL_AGENT_BASE_PROMPT
-        )
+        process_prompt = get_process_prompt_sync(self.db, process.id, "VOICE_CALL_AGENT")
         voice_config = resolve_voice_config(
-            question_set, process, pc.whatsapp_consent_status, universal_prompt
+            question_set, process, pc.whatsapp_consent_status, process_prompt.system_prompt_text
         )
         dynamic_variables = build_dynamic_variables(
             f"{candidate.name} {candidate.last_name}".strip(),

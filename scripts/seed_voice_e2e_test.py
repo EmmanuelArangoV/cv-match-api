@@ -22,6 +22,7 @@ from src.infrastructure.db.models import (
     Candidate,
     CandidateStatus,
     HiringProcess,
+    ProcessAIPrompt,
     ProcessCandidate,
     ProcessStatus,
     ProfilingQuestion,
@@ -72,13 +73,12 @@ async def main() -> None:
             await db.flush()
         print(f"Recruiter: {recruiter.email} ({recruiter.id})")
 
-        # Question set con config de voz (system prompt / first message dinamicos)
+        # Question set con la configuración técnica de voz reutilizable.
         question_set = QuestionSet(
             name="Profiling E2E Test - Voz",
             description="Set de prueba para validar la integracion real Twilio + ElevenLabs",
             status=QuestionSetStatus.ACTIVE.value,
             created_by=recruiter.id,
-            default_system_prompt=SYSTEM_PROMPT,
             default_first_message=FIRST_MESSAGE,
             default_language="es",
         )
@@ -90,7 +90,10 @@ async def main() -> None:
                 ProfilingQuestion(
                     question_set_id=question_set.id,
                     order_index=0,
-                    text="¿Cuál dirías que es tu mayor fortaleza técnica como desarrollador backend?",
+                    text=(
+                        "¿Cuál dirías que es tu mayor fortaleza técnica como "
+                        "desarrollador backend?"
+                    ),
                     type=QuestionType.OPEN.value,
                     weight=10,
                     is_critical=False,
@@ -120,6 +123,18 @@ async def main() -> None:
         )
         db.add(process)
         await db.flush()
+        # El prompt pertenece al proceso: este seed no depende de un default heredado
+        # del question set ni de una plantilla global mutable.
+        db.add(
+            ProcessAIPrompt(
+                process_id=process.id,
+                task_type="VOICE_CALL_AGENT",
+                version_name="qa-e2e",
+                system_prompt_text=SYSTEM_PROMPT,
+                is_active=True,
+                created_by=recruiter.id,
+            )
+        )
         print(f"HiringProcess: {process.name} ({process.id})")
 
         # Candidato

@@ -6,7 +6,6 @@ from src.infrastructure.db.models import HiringProcess, QuestionSet
 def _question_set(**overrides) -> QuestionSet:
     defaults = dict(
         default_agent_id="qs-agent",
-        default_system_prompt="qs-prompt",
         default_first_message="qs-first",
         default_language="es",
         default_llm_model="gpt-4o",
@@ -22,7 +21,6 @@ def _question_set(**overrides) -> QuestionSet:
 def _process(**overrides) -> HiringProcess:
     defaults = dict(
         voice_override_agent_id=None,
-        voice_override_system_prompt=None,
         voice_override_first_message=None,
         voice_override_language=None,
         voice_override_llm_model=None,
@@ -35,23 +33,23 @@ def _process(**overrides) -> HiringProcess:
     return HiringProcess(**defaults)
 
 
-def test_falls_back_to_question_set_defaults_when_no_override():
-    config = resolve_voice_config(_question_set(), _process())
+def test_uses_process_prompt_and_question_set_technical_defaults():
+    config = resolve_voice_config(_question_set(), _process(), process_prompt="process-prompt")
 
     assert config.agent_id == "qs-agent"
-    assert config.system_prompt == "qs-prompt"
+    assert config.system_prompt == "process-prompt"
     assert config.language == "es"
     assert config.voice_id == "qs-voice"
     assert config.tts_stability == 0.3
 
 
-def test_process_override_takes_precedence_over_question_set_default():
+def test_process_technical_override_takes_precedence_over_question_set_default():
     config = resolve_voice_config(
         _question_set(),
         _process(
-            voice_override_system_prompt="process-prompt",
             voice_override_voice_id="process-voice",
         ),
+        process_prompt="process-prompt",
     )
 
     assert config.system_prompt == "process-prompt"
@@ -61,13 +59,17 @@ def test_process_override_takes_precedence_over_question_set_default():
 
 
 def test_adds_consent_instruction_when_status_is_known():
-    config = resolve_voice_config(_question_set(), _process(), whatsapp_consent_status="TIMEOUT")
+    config = resolve_voice_config(
+        _question_set(), _process(), whatsapp_consent_status="TIMEOUT", process_prompt="prompt"
+    )
 
     assert "consentimiento explícito" in config.system_prompt
 
 
 def test_does_not_ask_again_after_whatsapp_consent():
-    config = resolve_voice_config(_question_set(), _process(), whatsapp_consent_status="ACCEPTED")
+    config = resolve_voice_config(
+        _question_set(), _process(), whatsapp_consent_status="ACCEPTED", process_prompt="prompt"
+    )
 
     assert "NO le vuelvas a pedir permiso" in config.system_prompt
 
@@ -78,17 +80,19 @@ def test_uses_settings_elevenlabs_agent_id_as_last_resort(monkeypatch):
     monkeypatch.setattr(voice_config_resolver.settings, "elevenlabs_agent_id", "fallback-agent")
 
     config = resolve_voice_config(
-        _question_set(default_agent_id=None), _process(voice_override_agent_id=None)
+        _question_set(default_agent_id=None),
+        _process(voice_override_agent_id=None),
+        process_prompt="prompt",
     )
 
     assert config.agent_id == "fallback-agent"
 
 
-def test_universal_prompt_requests_brief_feedback_after_each_answer():
+def test_process_prompt_requests_brief_feedback_after_each_answer():
     config = resolve_voice_config(
         _question_set(),
         _process(),
-        universal_prompt=VOICE_CALL_AGENT_BASE_PROMPT,
+        process_prompt=VOICE_CALL_AGENT_BASE_PROMPT,
     )
 
     assert "Después de cada respuesta sustantiva" in config.system_prompt

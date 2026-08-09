@@ -442,6 +442,7 @@ def _active_call_payload(run: ProfilingRun, candidate_status: str, now: datetime
             now,
             settings.stale_calling_timeout_seconds,
             settings.stale_answered_timeout_seconds,
+            created_at=run.created_at,
         ),
         "twilio_status_detail": run.twilio_status_detail,
         "twilio_call_sid": run.twilio_call_sid,

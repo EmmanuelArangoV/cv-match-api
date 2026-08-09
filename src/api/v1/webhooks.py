@@ -330,18 +330,17 @@ async def twilio_twiml_webhook(
         dynamic_variables = cached_context["dynamic_variables"]
         to_number = cached_context.get("to_number") or to_number
     else:
-        from src.infrastructure.ai.prompts import VOICE_CALL_AGENT_BASE_PROMPT
-        from src.infrastructure.cache.redis_client import get_active_ai_prompt
+        from src.application.ai.process_prompt_resolver import get_process_prompt
 
-        universal_prompt = await get_active_ai_prompt(
-            db, AITaskType.VOICE_CALL_AGENT.value, VOICE_CALL_AGENT_BASE_PROMPT
-        )
         if not (process and question_set and candidate):
             logger.error(f"[twilio][twiml] datos incompletos para ProfilingRun {run_id}")
             await db.commit()
             return Response(content=_TWIML_HANGUP, media_type="application/xml")
+        process_prompt = await get_process_prompt(
+            db, process.id, AITaskType.VOICE_CALL_AGENT.value
+        )
         voice_config = resolve_voice_config(
-            question_set, process, pc.whatsapp_consent_status, universal_prompt
+            question_set, process, pc.whatsapp_consent_status, process_prompt.system_prompt_text
         )
         dynamic_variables = _build_dynamic_variables(pc, process, candidate)
 

@@ -91,6 +91,7 @@ def _serialize_run(run: ProfilingRun, candidate_name: str) -> dict:
             datetime.now(UTC),
             settings.stale_calling_timeout_seconds,
             settings.stale_answered_timeout_seconds,
+            created_at=run.created_at,
         ),
     }
 

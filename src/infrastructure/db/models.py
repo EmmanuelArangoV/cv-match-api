@@ -207,6 +207,37 @@ class AIPrompt(Base):
     )
 
 
+class ProcessAIPrompt(Base):
+    """Revisión append-only de un prompt propio de un proceso."""
+
+    __tablename__ = "process_ai_prompts"
+    __table_args__ = (
+        Index(
+            "uq_process_ai_prompts_active_task",
+            "process_id",
+            "task_type",
+            unique=True,
+            postgresql_where=text("is_active"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    process_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("hiring_processes.id", ondelete="CASCADE"), nullable=False
+    )
+    task_type: Mapped[AITaskType] = mapped_column(String(50), nullable=False)
+    version_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    system_prompt_text: Mapped[str] = mapped_column(TEXT, nullable=False)
+    source_prompt_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("ai_prompts.id", ondelete="SET NULL"), nullable=True
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class GlobalBusinessSetting(Base):
     __tablename__ = "global_business_settings"
 
@@ -245,9 +276,8 @@ class HiringProcess(Base):
     )
 
     # Override de configuracion de voz (ElevenLabs) para este proceso especifico.
-    # Si un campo es NULL, se usa el default_* del QuestionSet asociado (ver QuestionSet).
+    # El prompt vive en ProcessAIPrompt; estos campos solo controlan el agente y la voz.
     voice_override_agent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    voice_override_system_prompt: Mapped[str | None] = mapped_column(TEXT, nullable=True)
     voice_override_first_message: Mapped[str | None] = mapped_column(TEXT, nullable=True)
     voice_override_language: Mapped[str | None] = mapped_column(String(10), nullable=True)
     voice_override_llm_model: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -267,6 +297,7 @@ class HiringProcess(Base):
         back_populates="process", order_by="JobDescription.version"
     )
     process_candidates: Mapped[list["ProcessCandidate"]] = relationship(back_populates="process")
+    ai_prompts: Mapped[list["ProcessAIPrompt"]] = relationship()
 
 
 class JobDescription(Base):
@@ -397,9 +428,8 @@ class QuestionSet(Base):
     )
 
     # Configuracion de voz (ElevenLabs) por defecto para los procesos que usen este set.
-    # HiringProcess.voice_override_* tiene prioridad sobre estos campos si esta seteado.
+    # El prompt se configura por proceso; el set solo aporta configuración técnica.
     default_agent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    default_system_prompt: Mapped[str | None] = mapped_column(TEXT, nullable=True)
     default_first_message: Mapped[str | None] = mapped_column(TEXT, nullable=True)
     default_language: Mapped[str | None] = mapped_column(String(10), nullable=True)
     default_llm_model: Mapped[str | None] = mapped_column(String(50), nullable=True)

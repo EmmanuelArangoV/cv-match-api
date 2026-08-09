@@ -1,9 +1,9 @@
 """
 Resuelve la configuracion de voz (ElevenLabs) efectiva para una llamada de profiling.
 
-Precedencia: HiringProcess.voice_override_* (si no es None) > QuestionSet.default_* (si no
-es None) > settings.elevenlabs_agent_id como unico fallback (el resto queda en None para que
-ElevenLabs use lo configurado en el dashboard del agente).
+Precedencia técnica: HiringProcess.voice_override_* (si no es None) > QuestionSet.default_*
+(si no es None) > settings.elevenlabs_agent_id. El prompt no participa en esa cadena: llega
+como una revisión propia y obligatoria del proceso.
 """
 
 from __future__ import annotations
@@ -83,9 +83,8 @@ def resolve_voice_config(
     question_set: QuestionSet,
     process: HiringProcess,
     whatsapp_consent_status: str | None = None,
-    universal_prompt: str | None = None,
+    process_prompt: str | None = None,
 ) -> VoiceCallConfig:
-    base_prompt = _pick(process.voice_override_system_prompt, question_set.default_system_prompt)
     questions_block = (
         _build_questions_block(question_set.questions) if question_set.questions else None
     )
@@ -98,7 +97,7 @@ def resolve_voice_config(
         else None
     )
     system_prompt = "\n\n".join(
-        p for p in (universal_prompt, base_prompt, consent_note, questions_block) if p
+        p for p in (process_prompt, consent_note, questions_block) if p
     )
 
     return VoiceCallConfig(

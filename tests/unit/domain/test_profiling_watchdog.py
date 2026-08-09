@@ -62,7 +62,23 @@ def test_voicemail_detected_status_never_stale():
     )
 
 
-def test_none_started_at_never_stale():
+def test_null_started_at_uses_created_at_for_historical_run():
+    created_at = NOW - timedelta(seconds=CALLING_TIMEOUT + 1)
+    assert is_run_stale(
+        ProfilingRunStatus.CALLING.value,
+        None,
+        NOW,
+        CALLING_TIMEOUT,
+        ANSWERED_TIMEOUT,
+        created_at=created_at,
+    )
+
+
+def test_null_started_at_without_created_at_remains_unknown():
     assert not is_run_stale(
-        ProfilingRunStatus.CALLING.value, None, NOW, CALLING_TIMEOUT, ANSWERED_TIMEOUT
+        ProfilingRunStatus.CALLING.value,
+        None,
+        NOW,
+        CALLING_TIMEOUT,
+        ANSWERED_TIMEOUT,
     )

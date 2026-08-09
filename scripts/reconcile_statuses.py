@@ -208,12 +208,14 @@ def reconcile(db: Session, apply: bool) -> tuple[list[str], list[str]]:
             now,
             settings.stale_calling_timeout_seconds,
             settings.stale_answered_timeout_seconds,
+            created_at=run.created_at,
         ):
             continue
         stale_ids.append(str(run.id))
         if not apply:
             continue
         pc = db.get(ProcessCandidate, run.process_candidate_id)
+        run.started_at = run.started_at or run.created_at
         run.status = ProfilingRunStatus.FAILED.value
         run.completed_at = now
         run.twilio_status_detail = "reconciled_stale"

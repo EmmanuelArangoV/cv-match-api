@@ -17,10 +17,9 @@ from src.application.hiring_process.progress import sync_process_status_sync
 from src.config import settings
 from src.domain.match.value_objects import MatchThresholds, MatchWeights
 from src.infrastructure.ai.model_compat import DEFAULT_OPENAI_MODEL, chat_completion_options
-from src.infrastructure.ai.prompts import MATCH_SYSTEM_PROMPT, build_match_messages
+from src.infrastructure.ai.prompts import build_match_messages
 from src.infrastructure.cache.redis_client import (
     get_active_ai_model_sync,
-    get_active_ai_prompt_sync,
     get_global_setting_dict_sync,
 )
 from src.infrastructure.costs import (
@@ -157,8 +156,9 @@ def execute_match(
         )
         thresholds = MatchThresholds.from_dict(raw_thresholds)
 
-        # Prompt y modelo activos (configurables desde ajustes), con fallback al default de código
-        system_prompt = get_active_ai_prompt_sync(db, "CV_MATCH", MATCH_SYSTEM_PROMPT)
+        from src.application.ai.process_prompt_resolver import get_process_prompt_sync
+
+        system_prompt = get_process_prompt_sync(db, proc_uuid, "CV_MATCH").system_prompt_text
         model = get_active_ai_model_sync(db, "CV_MATCH", "OPENAI", DEFAULT_OPENAI_MODEL)
 
         # Llamar a OpenAI

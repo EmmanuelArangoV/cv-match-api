@@ -18,11 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import settings
 from src.domain.shared.exceptions import BusinessRuleException
 from src.infrastructure.ai.model_compat import DEFAULT_OPENAI_MODEL, chat_completion_options
-from src.infrastructure.ai.prompts import (
-    JD_ANALYZE_ENHANCE_SYSTEM_PROMPT,
-    build_jd_analyze_enhance_messages,
-)
-from src.infrastructure.cache.redis_client import get_active_ai_model, get_active_ai_prompt
+from src.infrastructure.ai.prompts import build_jd_analyze_enhance_messages
+from src.infrastructure.cache.redis_client import get_active_ai_model
 from src.infrastructure.costs import (
     calculate_openai_cost,
     extract_openai_usage,
@@ -46,10 +43,11 @@ class ParseJobDescriptionUseCase:
         process_id: uuid.UUID,
         user_id: uuid.UUID,
     ) -> dict:
-        # Prompt y modelo activos (configurables desde ajustes), con fallback al default de código
-        system_prompt = await get_active_ai_prompt(
-            db, "JD_ENHANCEMENT", JD_ANALYZE_ENHANCE_SYSTEM_PROMPT
-        )
+        from src.application.ai.process_prompt_resolver import get_process_prompt
+
+        system_prompt = (
+            await get_process_prompt(db, process_id, "JD_ENHANCEMENT")
+        ).system_prompt_text
         model = await get_active_ai_model(
             db, "JD_ENHANCEMENT", "OPENAI", DEFAULT_OPENAI_MODEL
         )

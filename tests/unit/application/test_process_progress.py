@@ -28,8 +28,8 @@ def _candidate(status, candidate_id):
     )
 
 
-def _run(status, candidate_id, started_at=None):
-    now = started_at or datetime.now(UTC)
+def _run(status, candidate_id, started_at=None, created_at=None):
+    now = created_at or started_at or datetime.now(UTC)
     return SimpleNamespace(
         id=f"run-{candidate_id}",
         process_candidate_id=candidate_id,
@@ -138,6 +138,21 @@ def test_active_call_exposes_elapsed_time_and_stale_flag():
     assert call["elapsed_seconds"] >= 3600
     assert call["is_stale"] is True
     assert progress.counts["calls_active"] == 1
+
+
+def test_historical_active_call_without_started_at_uses_created_at_for_staleness():
+    created_at = datetime.now(UTC) - timedelta(hours=1)
+    progress = build_process_progress(
+        _process(status="PROFILING_ACTIVE", question_set_id="set-1"),
+        [_candidate("PROFILING_CALLING", "pc-1")],
+        [_run("CALLING", "pc-1", created_at=created_at)],
+        has_job_description=True,
+    )
+
+    call = progress.active_calls[0]
+    assert call["started_at"] == created_at.isoformat()
+    assert call["elapsed_seconds"] >= 3600
+    assert call["is_stale"] is True
 
 
 def test_closed_and_archived_are_never_overwritten_by_projection():

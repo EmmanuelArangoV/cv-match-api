@@ -2,6 +2,7 @@ import asyncio
 import csv
 import io
 import uuid
+from typing import Any
 
 import fitz  # pymupdf
 from docx import Document as DocxDocument
@@ -23,14 +24,21 @@ from src.application.hiring_process.progress import (
     sync_process_status,
 )
 from src.domain.hiring_process.rules import HiringProcessRules
-from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
+from src.domain.shared.exceptions import (
+    BusinessRuleException,
+    ForbiddenException,
+    NotFoundException,
+)
 from src.infrastructure.db.database import get_db
 from src.infrastructure.db.models import (
+    AIPrompt,
+    AITaskType,
     CostLog,
     GlobalBusinessSetting,
     HiringProcess,
     JobDescription,
     OperationType,
+    ProcessAIPrompt,
     ProcessCandidate,
     ProcessStatus,
     QuestionSet,
@@ -82,7 +90,7 @@ class CreateProcessRequest(BaseModel):
     area: str = Field(..., min_length=1, max_length=100)
     seniority: str = Field(..., min_length=1, max_length=50)
     budget_max_usd: float = Field(default=0.0, ge=0)
-    match_weights_override: dict | None = None
+    match_weights_override: dict[str, float] | None = None
     recruiter_id: uuid.UUID | None = None
 
 
@@ -95,11 +103,9 @@ class UpdateQuestionSetAssignmentRequest(BaseModel):
 
 
 class UpdateVoiceConfigRequest(BaseModel):
-    """Override de configuracion de voz (ElevenLabs) para este proceso. Tiene prioridad
-    sobre los default_* del QuestionSet asociado cuando un campo no es None."""
+    """Ajustes técnicos de voz para este proceso; el prompt se gestiona por separado."""
 
     voice_override_agent_id: str | None = None
-    voice_override_system_prompt: str | None = None
     voice_override_first_message: str | None = None
     voice_override_language: str | None = None
     voice_override_llm_model: str | None = None
@@ -121,6 +127,22 @@ class UpdateProcessStatusRequest(BaseModel):
     status: ProcessStatus
 
 
+class CreateProcessPromptRequest(BaseModel):
+    system_prompt_text: str = Field(..., min_length=1, max_length=50_000)
+
+
+def _require_process_prompt_editor(process: HiringProcess, current_user: User) -> None:
+    if process.status in (ProcessStatus.CLOSED.value, ProcessStatus.ARCHIVED.value):
+        raise BusinessRuleException("RB-009: Proceso cerrado o archivado")
+    if current_user.role == UserRole.ADMIN.value:
+        return
+    if current_user.role == UserRole.RECRUITER.value and process.recruiter_id == current_user.id:
+        return
+    raise ForbiddenException(
+        "Solo el recruiter responsable o un administrador puede editar prompts."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -131,7 +153,7 @@ async def create_process(
     body: CreateProcessRequest,
     current_user: User = RequireRecruiter,
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     from src.domain.match.value_objects import MatchWeights
 
     total_budget_setting = await db.scalar(
@@ -185,6 +207,13 @@ async def create_process(
         status=ProcessStatus.DRAFT.value,
     )
     db.add(process)
+    await db.flush()
+
+    # Las plantillas globales se copian al crear el proceso. A partir de aquí cada revisión
+    # pertenece exclusivamente al proceso y no cambia cuando Admin publique otra plantilla.
+    from src.application.ai.process_prompt_resolver import seed_process_prompts
+
+    await seed_process_prompts(db, process.id, current_user.id)
     await db.commit()
     await db.refresh(process)
 
@@ -220,7 +249,7 @@ async def create_process(
 async def list_processes(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     from src.infrastructure.db.models import UserRole
 
     query = (
@@ -271,7 +300,7 @@ async def get_process(
     process_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     result = await db.execute(
         select(HiringProcess)
         .where(HiringProcess.id == process_id)
@@ -303,7 +332,6 @@ async def get_process(
         "recruiter_id": str(process.recruiter_id),
         "recruiter_name": f"{process.recruiter.name} {process.recruiter.last_name}",
         "question_set_id": str(process.question_set_id) if process.question_set_id else None,
-        "voice_override_system_prompt": process.voice_override_system_prompt,
         "voice_override_first_message": process.voice_override_first_message,
         "voice_override_language": process.voice_override_language,
         "job_description": {
@@ -384,7 +412,6 @@ async def update_process_voice_config(
 
     for field in (
         "voice_override_agent_id",
-        "voice_override_system_prompt",
         "voice_override_first_message",
         "voice_override_language",
         "voice_override_llm_model",
@@ -404,7 +431,6 @@ async def update_process_voice_config(
         field: getattr(process, field)
         for field in (
             "voice_override_agent_id",
-            "voice_override_system_prompt",
             "voice_override_first_message",
             "voice_override_language",
             "voice_override_llm_model",
@@ -414,6 +440,163 @@ async def update_process_voice_config(
             "voice_override_tts_similarity_boost",
         )
     }
+
+
+def _serialize_process_prompt(prompt: ProcessAIPrompt) -> dict:
+    return {
+        "id": str(prompt.id),
+        "process_id": str(prompt.process_id),
+        "task_type": str(prompt.task_type),
+        "version_name": prompt.version_name,
+        "system_prompt_text": prompt.system_prompt_text,
+        "source_prompt_id": str(prompt.source_prompt_id) if prompt.source_prompt_id else None,
+        "is_active": prompt.is_active,
+        "created_by": str(prompt.created_by) if prompt.created_by else None,
+        "created_at": prompt.created_at.isoformat(),
+    }
+
+
+@router.get("/{process_id}/ai-prompts")
+async def list_process_prompts(
+    process_id: uuid.UUID,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    process = await db.get(HiringProcess, process_id)
+    if not process:
+        raise NotFoundException("Proceso no encontrado")
+    if current_user.role == UserRole.RECRUITER.value and process.recruiter_id != current_user.id:
+        raise NotFoundException("Proceso no encontrado")
+
+    rows = (
+        await db.execute(
+            select(ProcessAIPrompt)
+            .where(ProcessAIPrompt.process_id == process_id)
+            .order_by(ProcessAIPrompt.task_type, ProcessAIPrompt.created_at.desc())
+        )
+    ).scalars().all()
+    return {"prompts": [_serialize_process_prompt(row) for row in rows]}
+
+
+@router.post("/{process_id}/ai-prompts/{task_type}", status_code=201)
+async def create_process_prompt(
+    process_id: uuid.UUID,
+    task_type: AITaskType,
+    body: CreateProcessPromptRequest,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    process = await db.get(HiringProcess, process_id)
+    if not process:
+        raise NotFoundException("Proceso no encontrado")
+    _require_process_prompt_editor(process, current_user)
+
+    from src.application.ai.process_prompt_resolver import next_process_prompt_version
+    from src.infrastructure.db.audit import record_audit
+
+    active_rows = (
+        await db.execute(
+            select(ProcessAIPrompt).where(
+                ProcessAIPrompt.process_id == process_id,
+                ProcessAIPrompt.task_type == task_type.value,
+                ProcessAIPrompt.is_active.is_(True),
+            )
+        )
+    ).scalars().all()
+    for active in active_rows:
+        active.is_active = False
+    # Libera primero el índice parcial de la revisión activa antes de insertar la nueva.
+    await db.flush()
+
+    prompt = ProcessAIPrompt(
+        process_id=process_id,
+        task_type=task_type.value,
+        version_name=await next_process_prompt_version(db, process_id, task_type.value),
+        system_prompt_text=body.system_prompt_text.strip(),
+        source_prompt_id=None,
+        is_active=True,
+        created_by=current_user.id,
+    )
+    db.add(prompt)
+    await db.flush()
+    record_audit(
+        db,
+        current_user.id,
+        "PROCESS_AI_PROMPT_UPDATED",
+        "ProcessAIPrompt",
+        prompt.id,
+        old_value={"active_prompt_ids": [str(row.id) for row in active_rows]},
+        new_value={"process_id": str(process_id), "task_type": task_type.value},
+    )
+    await db.commit()
+    await db.refresh(prompt)
+    return _serialize_process_prompt(prompt)
+
+
+@router.post("/{process_id}/ai-prompts/{task_type}/restore-template", status_code=201)
+async def restore_process_prompt_template(
+    process_id: uuid.UUID,
+    task_type: AITaskType,
+    current_user: User = RequireRecruiter,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    process = await db.get(HiringProcess, process_id)
+    if not process:
+        raise NotFoundException("Proceso no encontrado")
+    _require_process_prompt_editor(process, current_user)
+
+    template = await db.scalar(
+        select(AIPrompt).where(AIPrompt.task_type == task_type.value, AIPrompt.is_active.is_(True))
+    )
+    if not template:
+        raise BusinessRuleException("No hay una plantilla global activa para esta tarea.")
+
+    from src.application.ai.process_prompt_resolver import next_process_prompt_version
+    from src.infrastructure.db.audit import record_audit
+
+    active_rows = (
+        await db.execute(
+            select(ProcessAIPrompt).where(
+                ProcessAIPrompt.process_id == process_id,
+                ProcessAIPrompt.task_type == task_type.value,
+                ProcessAIPrompt.is_active.is_(True),
+            )
+        )
+    ).scalars().all()
+    for active in active_rows:
+        active.is_active = False
+    # Libera primero el índice parcial de la revisión activa antes de insertar la nueva.
+    await db.flush()
+    prompt = ProcessAIPrompt(
+        process_id=process_id,
+        task_type=task_type.value,
+        version_name=(
+            f"{await next_process_prompt_version(db, process_id, task_type.value)} "
+            f"· {template.version_name}"
+        ),
+        system_prompt_text=template.system_prompt_text,
+        source_prompt_id=template.id,
+        is_active=True,
+        created_by=current_user.id,
+    )
+    db.add(prompt)
+    await db.flush()
+    record_audit(
+        db,
+        current_user.id,
+        "PROCESS_AI_PROMPT_RESTORED",
+        "ProcessAIPrompt",
+        prompt.id,
+        old_value={"active_prompt_ids": [str(row.id) for row in active_rows]},
+        new_value={
+            "process_id": str(process_id),
+            "task_type": task_type.value,
+            "template_id": str(template.id),
+        },
+    )
+    await db.commit()
+    await db.refresh(prompt)
+    return _serialize_process_prompt(prompt)
 
 
 @router.post("/{process_id}/job-description", status_code=201)

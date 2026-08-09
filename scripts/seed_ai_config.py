@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy import select
 
+from src.application.candidate.whatsapp_message_usecase import _AGENT_SYSTEM_PROMPT
 from src.infrastructure.ai.prompts import (
     CV_EXTRACTION_PROMPT,
     JD_ANALYZE_ENHANCE_SYSTEM_PROMPT,
@@ -34,6 +35,7 @@ PROMPTS = {
     AITaskType.JD_ENHANCEMENT: JD_ANALYZE_ENHANCE_SYSTEM_PROMPT,
     AITaskType.VOICE_PROFILING: PROFILING_EVALUATION_PROMPT,
     AITaskType.VOICE_CALL_AGENT: VOICE_CALL_AGENT_BASE_PROMPT,
+    AITaskType.WHATSAPP_MESSAGE: _AGENT_SYSTEM_PROMPT,
 }
 
 MODELS = {
