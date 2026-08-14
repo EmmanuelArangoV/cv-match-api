@@ -1,82 +1,58 @@
-# 🚀 Estado Actual del Proyecto: RIWI MATCH (Backend)
+# Estado actual del Backend
 
-> Actualizado el **2026-07-08** tras una auditoría código-vs-documentación. La versión anterior de
-> este documento describía la integración de voz como mock: **ya no es así** — la integración es
-> real desde los commits `c5f24bd`, `04dded4` y `ca48351`. El plan detallado para cerrar lo que
-> falta está en **`PLAN_MVP_100.md`**, en la raíz del monorepo (repo padre `RiwiMatch`, no dentro
-> de este submódulo).
+> Actualizado: 2026-08-09. Este es un resumen operativo; OpenAPI y el código son la fuente exacta.
 
----
+## Implementado
 
-## ✅ 1. Lo que funciona completo y con integraciones reales
+- JWT con refresh/logout y roles `ADMIN`, `RECRUITER`, `TA_LEADER`.
+- Procesos, JD versionadas, cierre/archivo y filtros server-side.
+- Home paginado con resumen/opciones, sin cargar el detalle de todos los procesos.
+- Carga, deduplicación, extracción/normalización de CV y nota prioritaria del recruiter.
+- Match manual explicable, ranking y override humano.
+- Descarte/restauración reversible y disponibilidad del candidato.
+- Question Sets versionados sin prompts ni saludo inicial.
+- Configuración de modelos/prompts globales y prompts de comunicación por proceso.
+- Plantillas WhatsApp administrables, sincronización de estado Meta y selección por proceso.
+- Consentimiento, llamadas Twilio + ElevenLabs, contexto/TwiML precargado y AMD opcional/asíncrono.
+- Profiling con transcript, audio, respuestas, evaluación y lifecycle central por `ProfilingRun`.
+- Watchdog/reconciliación de intentos atascados y protección contra duplicados activos.
+- `CostLog` auditable a lo largo del pipeline y agregados por proceso/candidato/proveedor.
+- Auditoría, feedback, reportes CSV, búsqueda, notificaciones, métricas y administración de usuarios.
 
-1. **Auth (JWT + roles):** login, refresh con rotación, logout, roles ADMIN/RECRUITER/TA_LEADER,
-   estados ACTIVE/SUSPENDED, filtro por recruiter en procesos.
-2. **Procesos + JD:** CRUD de creación/listado/detalle, JD por texto o archivo (PDF/DOCX/TXT),
-   parseo de JD con IA (must-have / nice-to-have / deal-breakers), JD versionada inmutable,
-   pesos de match configurables por proceso (`match_weights_override`).
-3. **Carga y parseo de CVs:** hasta 50 por lote, deduplicación por SHA-256, upload a R2, extracción
-   con `gpt-4o` (incluida Vision para imágenes), embedding `text-embedding-3-small` en pgvector,
-   PDF normalizado, CostLog por extracción.
-4. **Motor de match:** pesos por 6 categorías, clasificación HIGH/MEDIUM/LOW/NOT_RECOMMENDED,
-   fortalezas/gaps/breakdown explicado, ranking, override humano con notas, CostLog por match.
-5. **WhatsApp (Meta Business, real):** plantilla de consentimiento, firma HMAC verificada, agente
-   conversacional con IA para dudas frecuentes, estados de consentimiento
-   PENDING/ACCEPTED/REJECTED/TIMEOUT, disparo automático del profiling al aceptar.
-6. **Llamadas de voz (Twilio + ElevenLabs, real — NO mock):** SDKs oficiales (`twilio>=9.0.0`,
-   `elevenlabs>=2.56.0`), AMD síncrono (si contesta un buzón se cuelga sin invocar a ElevenLabs),
-   `register_call` real, webhooks con firma verificada (Twilio y ElevenLabs), status-callback para
-   llamadas que nunca conectan, watchdog `check_stale_profiling_calls` vía Celery Beat, evaluación
-   post-llamada con `AdvancementProbability` (RB-006/007), RB-005 y RB-010 validados antes de
-   llamar, CostLog de voz, use cases en `src/application/profiling/`.
-7. **Question sets:** CRUD completo de sets y preguntas (tipos, pesos, keywords, criticidad,
-   criterios de evaluación), configuración de voz por defecto y override por proceso.
-8. **Configuración de IA (endpoints):** CRUD de modelos con exclusión mutua de activo, prompts
-   append-only, global_business_settings (`src/api/v1/ai_config.py`).
-9. **Métricas de costos:** dashboard agregado (total, por proceso, por usuario, por operación,
-   diario) en `src/api/v1/metrics.py`.
+## Decisiones vigentes
 
----
+- Modelo de workloads: `gpt-5.6-luna`.
+- La IA recomienda; ninguna exclusión de candidato es automática.
+- Extracción y match requieren acciones separadas.
+- Prompts globales: extracción, match, mejora de JD y evaluación de profiling.
+- Prompts por proceso: WhatsApp y agente de llamada. El saludo pertenece al agente; Question Set
+  solo define preguntas.
+- Home usa paginación/filtros en backend. Cerrados/archivados se excluyen por defecto pero son
+  recuperables mediante filtro.
+- AMD está controlado por entorno; habilitarlo cambia clasificación/latencia y requiere QA real.
 
-## 🏗️ 2. Lo que existe pero está incompleto (parcial)
+## Dependencias operativas
 
-1. **CostLog:** cubre CV, match y voz; falta registrar WhatsApp y la evaluación post-profiling.
-2. **Circuit breaker RB-010:** se aplica antes de las llamadas de voz, pero no antes de
-   `run_match` ni `parse_cv`.
-3. **Configuración de IA dinámica:** los endpoints existen, pero los workers usan `"gpt-4o"`
-   hardcodeado en vez de leer el modelo/prompt activo.
-4. **RB-005 (máx. 4 llamadas simultáneas):** se valida **por proceso**; el documento maestro lo
-   define **global**.
-5. **Consentimiento verbal en llamada:** la columna `call_consent_status` existe pero ningún flujo
-   la escribe.
-6. **Versionamiento de question sets:** el campo `version` existe, pero editar un set usado muta la
-   versión actual en vez de crear una nueva.
-7. **Métricas por proceso / vista Líder TA:** solo existe el dashboard de costos global.
-8. **Vista detalle de candidato:** falta exponer estado de profiling, respuestas capturadas
-   (`ProfilingAnswer`) y transcripción completa.
+Una demo completa necesita PostgreSQL con pgvector, Redis, R2, OpenAI, Meta, Twilio, ElevenLabs,
+API, worker, beat y endpoints públicos HTTPS. Sin una credencial concreta solo se considera
+validado el comportamiento mock/local correspondiente.
 
----
+## QA vigente
 
-## ⏳ 3. Lo que falta por completo
+CI ejecuta auditoría de dependencias, Ruff, ratchet de mypy, pytest y build Docker. La suite
+automatizada local se ejecuta con:
 
-1. **CRUD de usuarios por API** — solo existen `scripts/create_admin.py` / `create_recruiter.py`.
-2. **`resolve_whatsapp_timeout`** — el consentimiento `PENDING` no pasa a `TIMEOUT` a las 24 h por
-   sí solo (única pieza del contrato de voz sin implementar).
-3. **Audit logs** — la tabla `AuditLog` existe pero ningún endpoint escribe en ella (criterio de
-   aceptación 15 del MVP, el único faltante).
-4. **Alertas de presupuesto (80/90/100%)** — RB-010 bloquea al 100% (solo en voz), sin alertas
-   proactivas.
-5. **Feedback loop** — marcar análisis de IA como correcto/parcial/incorrecto.
-6. **Editar / cerrar / archivar proceso por API** — las transiciones existen en la máquina de
-   estados pero no hay endpoints.
-7. **Endpoints de export/reportes (CSV)**.
-8. **Post-MVP (decidido, no olvidado):** RLS, SSE, Azure Document Intelligence (OCR plan B) —
-   justificación en `PLAN_MVP_100.md` §6.
+```bash
+.venv/bin/pytest -q tests
+```
 
----
+No usar este documento como conteo fijo de tests: el número cambia; consulta la ejecución CI más
+reciente.
 
-## 🧪 4. Tests
+## Riesgos/pendientes para producción
 
-**22 tests unitarios**, todos del dominio de voz/profiling (máquina de estados del candidato,
-watchdog, resolver de config de voz, firmas de Twilio/ElevenLabs). Sin cobertura de auth, procesos,
-CVs, match, WhatsApp ni métricas. Objetivo del plan: 60+ tests (ver `PLAN_MVP_100.md` §5).
+- Revisar rotación de secretos, retención de CV/audio/transcript y recuperación de DB.
+- Validar plantillas Meta y firmas webhooks en el ambiente de destino.
+- Confirmar una sola réplica de Celery Beat y observabilidad/alertas del watchdog.
+- Conciliar tarifas de proveedores cuando cambien; los costos históricos conservan su fuente.
+- Ejecutar E2E real controlada después de cambios de proveedor, modelo, prompt, AMD o telefonía.

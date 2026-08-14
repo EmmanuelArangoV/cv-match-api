@@ -8,7 +8,7 @@ description: Úsala al cambiar el estado de un candidato o de un proceso de cont
 El ciclo de vida del candidato es una **máquina de estados estricta**. El flujo feliz es:
 
 ```
-LOADED → CV_PROCESSING → MATCH_PENDING → MATCHED → SELECTED_FOR_PROFILING
+LOADED → CV_PROCESSING → MATCH_PENDING → MATCH_PROCESSING → MATCHED → SELECTED_FOR_PROFILING
        → PROFILING_QUEUED → PROFILING_CALLING → PROFILING_COMPLETED
 ```
 
@@ -41,10 +41,8 @@ pc.status = target.value
 (que `src/api/main.py` mapea a HTTP 422). Nunca asignes `pc.status` sin pasar por aquí
 en la capa de aplicación.
 
-> Nota sobre workers: en las tareas Celery (p. ej. `parse_cv.py`) el estado se asigna como
-> string (`pc.status = CandidateStatus.CV_PROCESSING.value`) por rendimiento, **pero debe
-> respetar el orden permitido por `_TRANSITIONS`**. Si dudas, valida igualmente con
-> `CandidateStateMachine.transition()`. Ver la skill [[crear-tarea-celery]].
+> En profiling no basta con la máquina del candidato: usa
+> `src/application/profiling/lifecycle.py`, que alinea `ProfilingRun`, candidato y proceso.
 
 ## Cómo AÑADIR una transición nueva
 
@@ -73,4 +71,4 @@ en la capa de aplicación.
 
 - Prueba una transición válida y una inválida; la inválida debe lanzar `BusinessRuleException`
   y, vía API, devolver 422.
-- `ruff check src/` y `mypy src/` sin errores.
+- `.venv/bin/ruff check src tests`, `scripts/check_mypy_ratchet.py` y las pruebas dirigidas pasan.

@@ -1,42 +1,76 @@
-# CLAUDE.md — Backend (cv-match-api)
+# CLAUDE.md — Backend RIWI MATCH
 
-Backend FastAPI (Python 3.12+) de RIWI MATCH con workers Celery. Este repo es un **submódulo** del
-monorepo `RiwiMatch`; la guía completa de arquitectura vive en el `CLAUDE.md` de la raíz del repo
-padre.
+FastAPI + Celery de RIWI MATCH. Lee primero [`AGENTS.md`](AGENTS.md).
 
-## Plan de cierre del MVP
+## Capas
 
-**El plan para llevar F1–F3 al 100% está en `PLAN_MVP_100.md`, en la raíz del monorepo (repo padre
-`RiwiMatch`, un nivel arriba de este submódulo).** Consúltalo antes de priorizar trabajo nuevo:
-lista cada brecha con los archivos de backend y frontend a tocar. El estado actual resumido está en
-`STATUS_RESUMEN.md` (este repo).
+- `src/api/`: FastAPI, schemas, dependencias JWT/roles, webhooks y mapeo de errores.
+- `src/application/`: casos de uso y servicios de aplicación.
+- `src/domain/`: reglas puras, enums, máquinas de estado y excepciones.
+- `src/infrastructure/`: SQLAlchemy, repositorios, Celery, OpenAI, R2, Meta, Twilio y ElevenLabs.
 
-## Esencial
+`src/api/main.py` debe montar cada router. Lanza `DomainException` y sus subclases desde negocio;
+no acoples `HTTPException` a dominio/aplicación.
 
-- Arquitectura limpia con 4 capas bajo `src/` (`api/`, `application/`, `domain/`,
-  `infrastructure/`); la regla de dependencia va hacia adentro.
-- Toda transición de estado pasa por las máquinas de estado de `src/domain/`; errores se señalan
-  con las excepciones de dominio (`src/domain/shared/exceptions.py`), nunca con `HTTPException`.
-- El trabajo pesado (parseo de CV, match, WhatsApp, llamadas de voz) corre en tareas Celery.
-- Comentarios y mensajes de error **en español**.
-- **Todo router nuevo en `src/api/v1/` debe montarse explícitamente en `src/api/main.py`** con
-  `app.include_router(...)` — crear el archivo con `APIRouter` no lo expone por HTTP. `feedback.py`,
-  `audit.py` y `reports.py` existieron como código muerto por esta razón hasta que se integró el
-  frontend; verifica `main.py` si un router "existe" pero responde 404.
-- `GET /api/v1/users/me` devuelve el perfil del usuario autenticado (cualquier rol) — úsalo en vez
-  de decodificar el JWT para obtener nombre/email, que no van en el payload del token.
+## Pipeline vigente
+
+`ProcessCandidate` es el estado de negocio y `ProfilingRun` representa cada intento técnico. Las
+transiciones y la proyección compartida viven en `src/application/profiling/lifecycle.py` y
+`src/application/hiring_process/progress.py`. API, tareas y webhooks deben usar esos servicios.
+Celery Beat ejecuta el watchdog que repara o falla intentos `CALLING`/`ANSWERED` estancados,
+incluidos registros históricos sin timestamp completo.
+
+Extracción de CV y match no se encadenan automáticamente:
+
+1. upload crea candidatos `LOADED`;
+2. `candidates/analyze` procesa `LOADED`/`CV_ERROR`;
+3. al terminar quedan listos para match;
+4. `processes/{id}/match` se ejecuta por acción humana.
+
+## Modelos, prompts y comunicaciones
+
+- El modelo activo de workloads es `gpt-5.6-luna`; evita strings de modelo dispersos.
+- Prompts globales Admin: `CV_EXTRACTION`, `CV_MATCH`, `JD_ENHANCEMENT`, `VOICE_PROFILING`.
+- Prompts por proceso: `WHATSAPP_MESSAGE`, `VOICE_CALL_AGENT`.
+- `VOICE_CALL_AGENT` versiona `first_message` y system prompt. No hay fallback al Question Set.
+- Question Sets solo contienen preguntas, pesos, criticidad y criterios.
+- `WhatsAppTemplate` conserva nombre Meta, idioma, categoría, componentes, botones, estado,
+  habilitación y default. Solo una plantilla aprobada/habilitada puede asignarse a un proceso.
+- Twilio registra la llamada con ElevenLabs y precarga contexto/TwiML en Redis durante el ring.
+  AMD puede estar deshabilitado, síncrono o asíncrono según variables.
+
+No aceptes overrides arbitrarios en la llamada: solo los campos explícitamente permitidos. Firma
+y correlaciona webhooks Twilio, ElevenLabs y Meta.
+
+## Costos
+
+Cada etapa pagada registra `CostLog`: almacenamiento, extracción, match, WhatsApp, telefonía,
+ElevenLabs y evaluación final. Conserva proveedor, operación, modelo, unidades,
+`provider_reported` frente a `rate_card`, referencia externa y breakdown. La API agrega; el
+frontend no estima.
+
+## Comandos
 
 ```bash
-pip install -e ".[dev]"    # instalar
-python main.py             # API en http://localhost:8000
-celery -A src.infrastructure.workers.celery_app worker --loglevel=info
-celery -A src.infrastructure.workers.celery_app beat --loglevel=info
-pytest                     # tests
-ruff check src/ && mypy src/
+python -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/alembic upgrade head
+.venv/bin/uvicorn src.api.main:app --reload --port 8000
+.venv/bin/celery -A src.infrastructure.workers.celery_app worker --loglevel=info
+.venv/bin/celery -A src.infrastructure.workers.celery_app beat --loglevel=info
+
+.venv/bin/ruff check src tests
+.venv/bin/python scripts/check_mypy_ratchet.py
+.venv/bin/pytest -q tests
 ```
 
-## Skills
+El `pytest -q` sin `tests` también puede recolectar scripts manuales; la suite automatizada es
+`pytest -q tests`.
 
-En `.claude/skills/` de este repo: `maquina-de-estados` (referencia autoritativa de las dos
-máquinas de estado y reglas RB-001..RB-010), `agregar-transicion-estado` y `crear-tarea-celery`.
-Úsalas antes de tocar estados, reglas de negocio o tareas Celery.
+## Contratos
+
+- OpenAPI generado: `/openapi.json`; UI: `/docs`.
+- Resumen por dominios: `docs/api_contract.md`.
+- WhatsApp/plantillas: `docs/whatsapp_api_contract.md`.
+- Variables: `.env.example` y `src/config.py`.
+- Estado vigente: `STATUS_RESUMEN.md`.

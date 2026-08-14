@@ -1,101 +1,67 @@
-# WhatsApp Integration - Summary & API Contract
+# WhatsApp y plantillas — contrato operativo
 
-Este documento resume la arquitectura y los contratos de datos establecidos durante la integración de WhatsApp Business y OpenAI para **Riwi Match**.
+> Actualizado: 2026-08-09. Los schemas exactos están en `/openapi.json`.
 
-## 1. Resumen de lo Desarrollado
-Durante esta sesión logramos completar el flujo End-to-End de comunicación automatizada con los candidatos:
-- **Disparador Automático:** Al finalizar el procesamiento de la Hoja de Vida (`parse_cv`), Celery automáticamente delega a una nueva tarea asíncrona (`send_whatsapp_consent`) el envío de la plantilla inicial de WhatsApp.
-- **Base de Datos Sincronizada:** Generamos y aplicamos migraciones de Alembic para soportar los nuevos campos de estado de WhatsApp en `ProcessCandidate` (`whatsapp_consent_status`, `whatsapp_responded_at`).
-- **Scripts de Pruebas:** Se construyó un script aislado (`scripts/test_whatsapp.py`) que permite simular la creación de candidatos y el envío de plantillas sin necesidad de cargar CVs o arrancar Celery.
-- **Webhook Configurado:** Habilitamos la recepción de mensajes (Respuestas del candidato) a través de un Webhook verificado por Meta.
-- **IA Bidireccional:** Las respuestas entrantes son analizadas por OpenAI para comprender el _intent_ (aceptación, rechazo o preguntas) y emitir un mensaje de respuesta contextual en tiempo real.
+## Responsabilidades
 
----
+Admin administra el catálogo de `WhatsAppTemplate`: nombre registrado en Meta, idioma, categoría,
+componentes/botones, estado Meta, habilitación interna y plantilla predeterminada. Puede crear,
+enviar, sincronizar y mapear plantillas. Recruiter solo elige entre plantillas aprobadas y
+habilitadas para un proceso.
 
-## 2. API Contract: Webhook de Meta
+La asignación del proceso es explícita. El system prompt `WHATSAPP_MESSAGE` define comportamiento
+contextual, pero no reemplaza el contenido oficial aprobado por Meta.
 
-### 2.1. Validación del Webhook (GET)
-Meta verifica la propiedad del webhook enviando un desafío `GET`.
+## Endpoints de aplicación
 
-**Endpoint:** `GET /api/v1/webhooks/whatsapp`
+- Admin: `/api/v1/ai-config/whatsapp-templates/*`.
+- Opciones para recruiter: `GET /api/v1/whatsapp-templates`.
+- Asignación: `PATCH /api/v1/processes/{process_id}/whatsapp-template`.
+- Webhook Meta: `GET|POST /api/v1/webhooks/whatsapp`.
 
-**Query Parameters:**
-| Parámetro | Tipo | Descripción |
-| :--- | :--- | :--- |
-| `hub.mode` | `string` | Siempre es `"subscribe"` |
-| `hub.challenge` | `integer` | Número aleatorio que debe ser devuelto |
-| `hub.verify_token` | `string` | Token secreto (`META_WHATSAPP_VERIFY_TOKEN`) |
+Los paths/verbos específicos de cada operación se consultan en OpenAPI.
 
-**Respuesta Exitosa (200 OK):**
-Devuelve el `hub.challenge` en texto plano (Text/Plain).
+## Flujo de consentimiento
 
----
+1. El recruiter selecciona candidatos y dispara profiling.
+2. El backend valida proceso, teléfono y una plantilla aprobada/habilitada.
+3. Celery envía la plantilla y solo marca el consentimiento como enviado si Meta aceptó el envío.
+4. Meta entrega mensajes, respuestas interactivas y estados al webhook.
+5. Los botones configurados se interpretan como aceptación/rechazo; texto libre usa la política de
+   intención vigente sin convertir respuestas ambiguas en consentimiento.
+6. Al aceptar se encola el profiling respetando delay/concurrencia. Rechazo/timeout cancelan el
+   intento según lifecycle.
 
-### 2.2. Recepción de Mensajes (POST)
-Cuando el candidato responde en WhatsApp, Meta envía un POST a nuestro servidor.
+Reintentar un profiling pendiente puede reenviar el consentimiento; el handler debe ser idempotente
+ante webhooks duplicados.
 
-**Endpoint:** `POST /api/v1/webhooks/whatsapp`
+## Verificación del webhook
 
-**Body (JSON) - Estructura Simplificada de Meta:**
-```json
-{
-  "object": "whatsapp_business_account",
-  "entry": [
-    {
-      "id": "WHATSAPP_BUSINESS_ACCOUNT_ID",
-      "changes": [
-        {
-          "value": {
-            "messaging_product": "whatsapp",
-            "metadata": {
-              "display_phone_number": "1234567890",
-              "phone_number_id": "1180119558517396"
-            },
-            "contacts": [
-              {
-                "profile": { "name": "Nombre del Candidato" },
-                "wa_id": "573185926525"
-              }
-            ],
-            "messages": [
-              {
-                "from": "573185926525",
-                "id": "wamid.HBgLNTczMT...",
-                "timestamp": "1719253456",
-                "type": "text",
-                "text": {
-                  "body": "Hola, sí me interesa la entrevista."
-                }
-              }
-            ]
-          },
-          "field": "messages"
-        }
-      ]
-    }
-  ]
-}
+`GET /api/v1/webhooks/whatsapp` valida `hub.mode`, `hub.verify_token` y devuelve
+`hub.challenge`. `POST` recibe la envoltura oficial de WhatsApp Business. En ambientes no locales,
+verifica la firma con `META_WHATSAPP_WEBHOOK_SECRET`; no documentes ni registres el secreto.
+
+El webhook también procesa cambios de estado de plantillas y mensajes. Debe tolerar lotes,
+eventos desconocidos y reintentos sin duplicar transiciones ni costos.
+
+## Variables
+
+```text
+META_WHATSAPP_API_URL
+META_WHATSAPP_BUSINESS_ACCOUNT_ID
+META_WHATSAPP_PHONE_NUMBER_ID
+META_WHATSAPP_ACCESS_TOKEN
+META_WHATSAPP_VERIFY_TOKEN
+META_WHATSAPP_WEBHOOK_SECRET
+WHATSAPP_TEMPLATE_FALLBACK_ENABLED
+PUBLIC_BASE_URL
 ```
 
----
+`PUBLIC_BASE_URL` debe ser HTTPS alcanzable por Meta. En local usa ngrok y sigue
+`../../.agents/skills/start-project/SKILL.md`.
 
-## 3. Worker Tasks (Celery)
+## Costos y privacidad
 
-### Tarea: `send_whatsapp_consent`
-- **Ubicación:** `src/infrastructure/workers/tasks/whatsapp.py`
-- **Responsabilidad:** Enviar la primera plantilla ("consentimiento_entrevista" o "hello_world") al teléfono del candidato.
-- **Payload esperado:** 
-  ```python
-  process_candidate_id: str # UUID del ProcessCandidate
-  ```
-- **Disparador:** Al finalizar la tarea `parse_cv`.
-
----
-
-## 4. Requisitos de Infraestructura (Variables de Entorno)
-Para que el entorno funcione, es estrictamente necesario definir:
-- `META_WHATSAPP_API_URL`
-- `META_WHATSAPP_PHONE_NUMBER_ID`
-- `META_WHATSAPP_ACCESS_TOKEN` (Token de Meta)
-- `META_WHATSAPP_VERIFY_TOKEN` (Para validación del webhook)
-- Base de datos en Postgres y Broker de Celery (Redis) en ejecución.
+Cada envío cobrable registra un `CostLog` idempotente con fuente de costo. No guardar tokens ni el
+payload completo del candidato en logs. Las pruebas reales requieren un número autorizado y una
+decisión explícita sobre conservar o limpiar sus datos.
