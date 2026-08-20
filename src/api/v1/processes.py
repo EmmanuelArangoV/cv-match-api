@@ -25,6 +25,7 @@ from src.application.hiring_process.progress import (
     process_stage_sql_expression,
     sync_process_status,
 )
+from src.domain.candidate.state_machine import CandidateStateMachine
 from src.domain.hiring_process.rules import HiringProcessRules
 from src.domain.shared.exceptions import (
     BusinessRuleException,
@@ -35,6 +36,7 @@ from src.infrastructure.db.database import get_db
 from src.infrastructure.db.models import (
     AIPrompt,
     AITaskType,
+    CandidateStatus,
     CostLog,
     GlobalBusinessSetting,
     HiringProcess,
@@ -903,7 +905,10 @@ async def create_job_description(
     result = await db.execute(
         select(HiringProcess)
         .where(HiringProcess.id == process_id)
-        .options(selectinload(HiringProcess.job_descriptions))
+        .options(
+            selectinload(HiringProcess.job_descriptions),
+            selectinload(HiringProcess.process_candidates),
+        )
     )
     process: HiringProcess | None = result.scalar_one_or_none()
 
@@ -914,6 +919,7 @@ async def create_job_description(
         raise BusinessRuleException("RB-009: Proceso cerrado o archivado")
 
     # Versión incremental
+    is_first_version = not process.job_descriptions
     next_version = max((jd.version for jd in process.job_descriptions), default=0) + 1
 
     jd = JobDescription(
@@ -923,6 +929,19 @@ async def create_job_description(
         structured_jd={"version": next_version, "raw": body.jd_raw_text},
     )
     db.add(jd)
+
+    # El JD cambió: el match/ranking anterior quedó obsoleto. Solo se revierten los
+    # candidatos ya matcheados (MATCHED); los que avanzaron a profiling no se tocan.
+    if not is_first_version:
+        for pc in process.process_candidates:
+            if pc.status == CandidateStatus.MATCHED.value:
+                pc.status = CandidateStateMachine.transition(
+                    CandidateStatus.MATCHED, CandidateStatus.MATCH_PENDING
+                ).value
+                pc.match_percentage = 0.00
+                pc.match_category = None
+                pc.match_explanation = None
+
     await db.commit()
     await db.refresh(jd)
 
