@@ -1,3 +1,7 @@
+---
+slug: /api
+---
+
 # Contrato API — resumen vigente
 
 > Actualizado: 2026-08-09. La fuente de verdad exacta es el OpenAPI generado por la versión que

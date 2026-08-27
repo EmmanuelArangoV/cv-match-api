@@ -1,3 +1,7 @@
+---
+slug: /whatsapp
+---
+
 # WhatsApp y plantillas — contrato operativo
 
 > Actualizado: 2026-08-09. Los schemas exactos están en `/openapi.json`.
