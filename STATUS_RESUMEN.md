@@ -4,7 +4,8 @@
 
 ## Implementado
 
-- JWT con refresh/logout y roles `ADMIN`, `RECRUITER`, `TA_LEADER`.
+- JWT con refresh/logout, roles `ADMIN`, `RECRUITER`, `TA_LEADER` y SSO central con Órbita
+  mediante código de un solo uso, validación RS256 y aprovisionamiento local seguro.
 - Procesos, JD versionadas, cierre/archivo y filtros server-side.
 - Home paginado con resumen/opciones, sin cargar el detalle de todos los procesos.
 - Carga, deduplicación, extracción/normalización de CV y nota prioritaria del recruiter.

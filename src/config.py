@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     app_secret_key: str = "change-me-in-production"
     access_token_expire_minutes: int = 60
 
+    # Orbita SSO (solo el servicio API necesita el secreto)
+    orbita_sso_base_url: str = ""
+    orbita_sso_client_id: str = ""
+    orbita_sso_client_secret: str = ""
+    orbita_sso_redirect_uri: str = ""
+
     # Database
     database_url: str
     database_url_sync: str

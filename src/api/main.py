@@ -32,6 +32,7 @@ from src.domain.shared.exceptions import (
     DomainException,
     ForbiddenException,
     NotFoundException,
+    ServiceUnavailableException,
     UnauthorizedException,
 )
 
@@ -82,6 +83,11 @@ async def conflict_handler(_: Request, exc: ConflictException) -> JSONResponse:
 @app.exception_handler(BusinessRuleException)
 async def business_rule_handler(_: Request, exc: BusinessRuleException) -> JSONResponse:
     return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
+@app.exception_handler(ServiceUnavailableException)
+async def service_unavailable_handler(_: Request, exc: ServiceUnavailableException) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 @app.exception_handler(DomainException)
