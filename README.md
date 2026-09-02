@@ -13,6 +13,10 @@ La autenticación admite cuentas locales y SSO central mediante Órbita. Match v
 de Órbita, aprovisiona una identidad local vinculada por `orbita_user_id` y emite su propia sesión
 con los permisos `ADMIN`, `TA_LEADER` o `RECRUITER`.
 
+La autenticación admite cuentas locales y SSO central mediante Órbita. Match valida el JWT RS256
+de Órbita, aprovisiona una identidad local vinculada por `orbita_user_id` y emite su propia sesión
+con los permisos `ADMIN`, `TA_LEADER` o `RECRUITER`.
+
 ## Stack
 ## Qué contiene
 

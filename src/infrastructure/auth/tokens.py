@@ -1,6 +1,6 @@
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any
 
 import jwt
 from jwt import InvalidTokenError
@@ -17,15 +17,18 @@ def create_access_token(user_id: str, role: str, *, expires_at: datetime | None 
         minutes=settings.access_token_expire_minutes
     )
     payload = {"sub": user_id, "role": role, "exp": expire}
-    return cast(str, jwt.encode(payload, settings.app_secret_key, algorithm=_ALGORITHM))
+    encoded = jwt.encode(payload, settings.app_secret_key, algorithm=_ALGORITHM)
+    if not isinstance(encoded, str):
+        raise UnauthorizedException("No se pudo crear el token")
+    return encoded
 
 
 def decode_access_token(token: str) -> dict[str, Any]:
     try:
-        return cast(
-            dict[str, Any],
-            jwt.decode(token, settings.app_secret_key, algorithms=[_ALGORITHM]),
-        )
+        payload = jwt.decode(token, settings.app_secret_key, algorithms=[_ALGORITHM])
+        if not isinstance(payload, dict):
+            raise UnauthorizedException("Token inválido o expirado")
+        return payload
     except InvalidTokenError:
         raise UnauthorizedException("Token inválido o expirado")
 

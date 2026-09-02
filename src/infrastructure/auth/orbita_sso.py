@@ -1,7 +1,7 @@
 """Adaptador confidencial para el contrato SSO v1 de Órbita."""
 
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 from urllib.parse import urlencode, urlsplit
 
 import httpx
@@ -195,7 +195,10 @@ class OrbitaSsoClient:
                     json={"client_secret": self._config.client_secret, "roles": roles},
                 )
                 response.raise_for_status()
-                return cast(dict[str, Any], response.json())
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise OrbitaSsoUnavailableError("Órbita entregó un catálogo inválido")
+                return payload
         except httpx.HTTPError as exc:
             raise OrbitaSsoUnavailableError("No se pudo sincronizar el catálogo de roles") from exc
 
@@ -207,7 +210,10 @@ class OrbitaSsoClient:
             async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
                 response = await client.get(url)
                 response.raise_for_status()
-                discovery = cast(dict[str, Any], response.json())
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("Discovery inválido")
+                discovery = payload
         except (httpx.HTTPError, ValueError) as exc:
             raise OrbitaSsoUnavailableError("No se pudo descubrir el contrato SSO") from exc
         if discovery.get("contract_version") != self.CONTRACT_VERSION:
