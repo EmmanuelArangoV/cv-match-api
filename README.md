@@ -1,21 +1,36 @@
-# RIWI MATCH Backend
+<div align="center">
+  <img src="https://raw.githubusercontent.com/maryhug/riwi-match/main/src/assets/CurvaMatch.svg" alt="RIWI MATCH" width="360" />
+  <h1>Backend & Workers</h1>
+  <p>API, pipeline asíncrono y gobierno operativo de RIWI MATCH.</p>
 
-API y workers de la plataforma RIWI MATCH. Implementa autenticación por roles, procesos/JD,
-extracción de CV, match explicable, profiling con WhatsApp + Twilio + ElevenLabs, configuración de
-IA, costos, auditoría, métricas, reportes y búsqueda.
+  <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12" />
+  <img src="https://img.shields.io/badge/FastAPI-API-009688?logo=fastapi&logoColor=white" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/Celery-Workers-37814A?logo=celery&logoColor=white" alt="Celery" />
+  <img src="https://img.shields.io/badge/PostgreSQL-pgvector-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL con pgvector" />
+</div>
 
 La autenticación admite cuentas locales y SSO central mediante Órbita. Match valida el JWT RS256
 de Órbita, aprovisiona una identidad local vinculada por `orbita_user_id` y emite su propia sesión
 con los permisos `ADMIN`, `TA_LEADER` o `RECRUITER`.
 
 ## Stack
+## Qué contiene
 
-- Python 3.12, FastAPI y Pydantic.
-- SQLAlchemy 2 async, Alembic, PostgreSQL + pgvector.
-- Celery worker/beat y Redis.
-- Cloudflare R2, OpenAI, Meta WhatsApp, Twilio y ElevenLabs.
+Este repositorio entrega la API FastAPI y la misma imagen Python para tres procesos: API HTTP,
+worker Celery y Celery Beat. Gestiona autenticación, procesos, CVs, match manual, profiling por
+voz, costos, auditoría, métricas y reportes.
 
-## Inicio rápido
+```text
+API -> PostgreSQL + Redis -> Worker
+                             ├─ R2 / OpenAI
+                             └─ Meta / Twilio / ElevenLabs
+Beat -> watchdogs y vencimientos
+```
+
+El análisis de CV y el match son acciones manuales separadas. `ProcessCandidate` conserva el estado
+de negocio; `ProfilingRun`, cada intento técnico de llamada.
+
+## Inicio local
 
 ```bash
 python -m venv .venv
@@ -34,39 +49,25 @@ En terminales separadas:
 
 - Health: <http://localhost:8000/health>
 - Readiness: <http://localhost:8000/ready>
-- Swagger: <http://localhost:8000/docs>
+- OpenAPI: <http://localhost:8000/openapi.json>
 
-Para webhooks locales ejecuta `ngrok http 8000`, actualiza `PUBLIC_BASE_URL` y registra las URLs
-descritas en `../.agents/skills/start-project/SKILL.md`.
+PostgreSQL debe tener `pgvector` y Redis debe estar disponible antes de iniciar. Para webhooks
+locales, expón la API por HTTPS y configura `PUBLIC_BASE_URL`.
 
-## Flujo de negocio
+## Documentación
 
-```text
-Proceso + JD
-  → carga de CV
-  → análisis de CV (manual)
-  → match (manual)
-  → selección para profiling
-  → plantilla WhatsApp + consentimiento
-  → llamada Twilio/ElevenLabs
-  → transcript/audio/evaluación
-  → decisión humana
-```
+El portal Docusaurus vive en [`documentation/`](documentation/README.md) y publica el contenido de
+[`docs/`](docs/).
 
-El análisis solo toma `LOADED`/`CV_ERROR`. Un candidato nunca se descarta automáticamente y el
-descarte puede revertirse. `ProfilingRun` conserva cada intento y el watchdog evita que quede
-indefinidamente en `CALLING`.
+| Tema | Referencia |
+| --- | --- |
+| Arquitectura y módulos | [Arquitectura](docs/architecture.md) · [Mapa de código](docs/code-map.md) |
+| Estados y trabajo asíncrono | [Lifecycle](docs/lifecycle-and-projections.md) · [Celery](docs/async-work.md) |
+| Despliegue y datos | [Despliegue](docs/deployment.md) |
+| Costos | [Seguimiento y conciliación](docs/costs.md) |
+| HTTP | [Contrato API](docs/api_contract.md) · [WhatsApp](docs/whatsapp_api_contract.md) |
 
-## Configuración de IA
-
-Los modelos/prompts se resuelven en runtime desde configuración versionada. El workload actual usa
-`gpt-5.6-luna`. Los prompts de extracción, match, mejora de JD y evaluación de profiling son
-globales/Admin. Cada proceso solo configura WhatsApp y agente de llamada. El saludo de voz forma
-parte de `VOICE_CALL_AGENT`; Question Set no guarda prompts.
-
-## API
-
-OpenAPI es la fuente exacta y se genera desde los routers. Los grupos principales son:
+Para navegarlo localmente:
 
 - `/api/v1/auth`, `/users`, `/system`;
 - `/processes`, `/processes/home`, `/candidates`, `/match`;
@@ -101,6 +102,13 @@ El comando publica `admin`, `ta_leader` y `recruiter` sin imprimir el secreto. L
 usuarios se administran después desde Órbita.
 
 ## QA
+```bash
+cd documentation
+npm install
+npm run start
+```
+
+## Calidad
 
 ```bash
 .venv/bin/ruff check src tests
@@ -108,11 +116,5 @@ usuarios se administran después desde Órbita.
 .venv/bin/pytest -q tests
 ```
 
-CI también audita dependencias y construye la imagen Docker. Pruebas reales de proveedores deben
-ser explícitamente autorizadas y conciliar DB/costos después.
-
-## Desarrollo
-
-Las reglas para agentes están en [`AGENTS.md`](AGENTS.md). Las migraciones son append-only; no
-reescribas una migración ya desplegada. Commits de este repo deben preceder el cambio de puntero en
-el monorepo padre.
+Las pruebas reales de proveedores requieren autorización, credenciales válidas y conciliación de
+costos posterior. No incluyas secretos ni datos reales de candidatos en fixtures, logs o commits.
