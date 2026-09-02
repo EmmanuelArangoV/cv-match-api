@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.infrastructure.db.models import User
@@ -11,11 +11,19 @@ class UserRepository:
         self._db = db
 
     async def find_by_email(self, email: str) -> User | None:
-        result = await self._db.execute(select(User).where(User.email == email))
+        result = await self._db.execute(
+            select(User).where(func.lower(User.email) == email.strip().lower())
+        )
         return result.scalar_one_or_none()
 
     async def find_by_id(self, user_id: uuid.UUID | str) -> User | None:
         result = await self._db.execute(select(User).where(User.id == user_id))
+        return result.scalar_one_or_none()
+
+    async def find_by_orbita_user_id(self, orbita_user_id: uuid.UUID) -> User | None:
+        result = await self._db.execute(
+            select(User).where(User.orbita_user_id == orbita_user_id)
+        )
         return result.scalar_one_or_none()
 
     async def find_all(self) -> list[User]:
@@ -29,7 +37,9 @@ class UserRepository:
         return user
 
     async def email_exists(self, email: str) -> bool:
-        result = await self._db.execute(select(User.id).where(User.email == email))
+        result = await self._db.execute(
+            select(User.id).where(func.lower(User.email) == email.strip().lower())
+        )
         return result.scalar_one_or_none() is not None
 
     async def delete(self, user: User) -> None:

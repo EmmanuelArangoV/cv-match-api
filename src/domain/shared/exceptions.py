@@ -23,3 +23,7 @@ class BusinessRuleException(DomainException):
 
 class ConflictException(DomainException):
     pass
+
+
+class ServiceUnavailableException(DomainException):
+    pass

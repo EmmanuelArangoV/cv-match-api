@@ -4,6 +4,10 @@ API y workers de la plataforma RIWI MATCH. Implementa autenticación por roles, 
 extracción de CV, match explicable, profiling con WhatsApp + Twilio + ElevenLabs, configuración de
 IA, costos, auditoría, métricas, reportes y búsqueda.
 
+La autenticación admite cuentas locales y SSO central mediante Órbita. Match valida el JWT RS256
+de Órbita, aprovisiona una identidad local vinculada por `orbita_user_id` y emite su propia sesión
+con los permisos `ADMIN`, `TA_LEADER` o `RECRUITER`.
+
 ## Stack
 
 - Python 3.12, FastAPI y Pydantic.
@@ -81,9 +85,20 @@ Consulta [`docs/api_contract.md`](docs/api_contract.md) y
 - CV/IA: `R2_*`, `OPENAI_API_KEY`;
 - voz: `PUBLIC_BASE_URL`, `TWILIO_*`, `ELEVENLABS_*`;
 - consentimiento: `META_WHATSAPP_*`.
+- SSO: `ORBITA_SSO_BASE_URL`, `ORBITA_SSO_CLIENT_ID`, `ORBITA_SSO_CLIENT_SECRET` y
+  `ORBITA_SSO_REDIRECT_URI`, solo en el servicio API.
 
 No declares una integración lista solo porque `/health` responde: valida conexión, firma y una
 operación controlada del proveedor.
+
+Tras registrar la aplicación y guardar el secreto, sincroniza el catálogo completo de roles:
+
+```bash
+python -m src.scripts.sync_orbita_role_catalog
+```
+
+El comando publica `admin`, `ta_leader` y `recruiter` sin imprimir el secreto. Las asignaciones de
+usuarios se administran después desde Órbita.
 
 ## QA
 
