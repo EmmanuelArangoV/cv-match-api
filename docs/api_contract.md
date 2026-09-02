@@ -4,12 +4,12 @@ slug: /api
 
 # Contrato API — resumen vigente
 
-> Actualizado: 2026-08-09. La fuente de verdad exacta es el OpenAPI generado por la versión que
+> Actualizado: 2026-09-02. La fuente de verdad exacta es el OpenAPI generado por la versión que
 > está corriendo: `GET /openapi.json` y Swagger en `GET /docs`. Este documento explica alcance y
 > reglas; no duplica todos los schemas para evitar divergencias.
 
 La API usa prefijo `/api/v1`, JSON salvo uploads/descargas y JWT Bearer. Las excepciones de dominio
-se traducen de forma uniforme a 400/401/404/409/422. Roles y ownership se validan en backend aunque
+se traducen de forma uniforme a 400/401/403/404/409/422/503. Roles y ownership se validan en backend aunque
 el frontend oculte acciones.
 
 ## Dominios montados
@@ -26,6 +26,22 @@ el frontend oculte acciones.
 | IA/plantillas | `/ai-config/*`, `/whatsapp-templates` | Config global Admin y selección de plantillas disponibles |
 | Operación | `/metrics/*`, `/reports/*`, `/audit/*`, `/search/*`, `/notifications/*`, `/feedback/*` | Agregados, CSV, trazabilidad y utilidades |
 | Webhooks | `/webhooks/whatsapp`, `/webhooks/twilio/*`, `/webhooks/elevenlabs/*` | Verificación, estados, AMD, TwiML y post-call |
+
+## Autenticación y SSO con Órbita
+
+- `POST /auth/login`: login local con email/contraseña.
+- `POST /auth/refresh`: rota el refresh token y conserva el límite absoluto de una sesión SSO. Para
+  esas sesiones también devuelve `expires_in` y `session_expires_in`, de modo que el BFF no extienda
+  las cookies más allá de la evidencia de Órbita.
+- `POST /auth/logout`: revoca el refresh token local.
+- `GET /auth/orbita/authorize-url?state=...`: entrega al BFF la URL de autorización descubierta
+  desde Órbita. `state` debe tener entre 16 y 512 caracteres.
+- `POST /auth/orbita/exchange`: recibe un código de un solo uso, lo intercambia usando el secreto
+  server-side, valida RS256, `aud`, `kid`, `exp` y claims obligatorios, y devuelve tokens locales.
+
+Las claves SSO `admin`, `ta_leader` y `recruiter` se traducen a los roles internos homónimos en
+mayúscula. Un rol desconocido, usuario suspendido o colisión con una cuenta local se deniega. La
+sesión local creada por SSO nunca supera el vencimiento del token emitido por Órbita.
 
 ## Home optimizado
 

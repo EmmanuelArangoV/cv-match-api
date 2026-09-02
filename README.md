@@ -9,6 +9,15 @@
   <img src="https://img.shields.io/badge/PostgreSQL-pgvector-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL con pgvector" />
 </div>
 
+La autenticación admite cuentas locales y SSO central mediante Órbita. Match valida el JWT RS256
+de Órbita, aprovisiona una identidad local vinculada por `orbita_user_id` y emite su propia sesión
+con los permisos `ADMIN`, `TA_LEADER` o `RECRUITER`.
+
+La autenticación admite cuentas locales y SSO central mediante Órbita. Match valida el JWT RS256
+de Órbita, aprovisiona una identidad local vinculada por `orbita_user_id` y emite su propia sesión
+con los permisos `ADMIN`, `TA_LEADER` o `RECRUITER`.
+
+## Stack
 ## Qué contiene
 
 Este repositorio entrega la API FastAPI y la misma imagen Python para tres procesos: API HTTP,
@@ -64,6 +73,39 @@ El portal Docusaurus vive en [`documentation/`](documentation/README.md) y publi
 
 Para navegarlo localmente:
 
+- `/api/v1/auth`, `/users`, `/system`;
+- `/processes`, `/processes/home`, `/candidates`, `/match`;
+- `/question-sets`, `/profiling`, `/webhooks`;
+- `/ai-config`, `/whatsapp-templates`;
+- `/metrics`, `/reports`, `/audit`, `/feedback`, `/search`, `/notifications`.
+
+Consulta [`docs/api_contract.md`](docs/api_contract.md) y
+[`docs/whatsapp_api_contract.md`](docs/whatsapp_api_contract.md).
+
+## Variables
+
+`.env.example` es el inventario operativo. Los grupos obligatorios dependen del flujo probado:
+
+- core: `APP_SECRET_KEY`, `DATABASE_URL`, `DATABASE_URL_SYNC`, `REDIS_URL`;
+- CV/IA: `R2_*`, `OPENAI_API_KEY`;
+- voz: `PUBLIC_BASE_URL`, `TWILIO_*`, `ELEVENLABS_*`;
+- consentimiento: `META_WHATSAPP_*`.
+- SSO: `ORBITA_SSO_BASE_URL`, `ORBITA_SSO_CLIENT_ID`, `ORBITA_SSO_CLIENT_SECRET` y
+  `ORBITA_SSO_REDIRECT_URI`, solo en el servicio API.
+
+No declares una integración lista solo porque `/health` responde: valida conexión, firma y una
+operación controlada del proveedor.
+
+Tras registrar la aplicación y guardar el secreto, sincroniza el catálogo completo de roles:
+
+```bash
+python -m src.scripts.sync_orbita_role_catalog
+```
+
+El comando publica `admin`, `ta_leader` y `recruiter` sin imprimir el secreto. Las asignaciones de
+usuarios se administran después desde Órbita.
+
+## QA
 ```bash
 cd documentation
 npm install
