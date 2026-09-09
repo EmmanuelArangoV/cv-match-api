@@ -90,6 +90,19 @@ _CONTACT_FIELD_NAMES = {"email", "phone", "location", "linkedin_url", "github_ur
 _EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _URL_PATTERN = re.compile(r"(?:https?://|www\.)\S+", flags=re.IGNORECASE)
 _PHONE_PATTERN = re.compile(r"(?<!\w)\+?\d[\d\s().-]{6,}\d(?!\w)")
+_MISSING_VALUES = {
+    "unknown",
+    "unknow",
+    "not specified",
+    "not available",
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "desconocido",
+    "no especificado",
+    "no disponible",
+}
 
 
 def _e(value: object) -> str:
@@ -125,6 +138,21 @@ def _sanitize_for_public_cv(value: Any, location: str | None = None) -> Any:
             key: _sanitize_for_public_cv(item, location)
             for key, item in value.items()
             if key not in _CONTACT_FIELD_NAMES
+        }
+    return value
+
+
+def _omit_missing_values(value: Any) -> Any:
+    """Quita placeholders de extracción para no presentarlos como datos del CV."""
+    if isinstance(value, str):
+        return "" if value.strip().casefold() in _MISSING_VALUES else value
+    if isinstance(value, list):
+        cleaned_items = [_omit_missing_values(item) for item in value]
+        return [item for item in cleaned_items if item not in (None, "", [], {})]
+    if isinstance(value, dict):
+        cleaned_fields = {key: _omit_missing_values(item) for key, item in value.items()}
+        return {
+            key: item for key, item in cleaned_fields.items() if item not in (None, "", [], {})
         }
     return value
 
@@ -199,7 +227,8 @@ def _section_education(
         ]
         if item.get("year"):
             pieces.append(_e(item["year"]))
-        body.append(f"<p>{' · '.join(piece for piece in pieces if piece)}</p>")
+        if any(pieces):
+            body.append(f"<p>{' · '.join(piece for piece in pieces if piece)}</p>")
     return _heading(labels["education"]) + "".join(body)
 
 
@@ -230,7 +259,8 @@ def _section_certifications(
         ]
         if item.get("year"):
             pieces.append(_e(item["year"]))
-        body.append(f"<p>{' · '.join(piece for piece in pieces if piece)}</p>")
+        if any(pieces):
+            body.append(f"<p>{' · '.join(piece for piece in pieces if piece)}</p>")
     return _heading(labels["certifications"]) + "".join(body)
 
 
@@ -241,8 +271,9 @@ def _section_languages(items: list[dict[str, Any]], labels: dict[str, str]) -> s
     for item in items:
         language = _e(item.get("language", ""))
         level = _e(item.get("level_original") or item.get("level_cefr", ""))
-        body.append(f"<p>{language}{f' · {level}' if level else ''}</p>")
-    return _heading(labels["languages"]) + "".join(body)
+        if language:
+            body.append(f"<p>{language}{f' · {level}' if level else ''}</p>")
+    return _heading(labels["languages"]) + "".join(body) if body else ""
 
 
 def _section_experience(
@@ -260,13 +291,17 @@ def _section_experience(
         else:
             period = _e(start or end)
         meta = " · ".join(part for part in (_e(item.get("employment_type", "")), period) if part)
-        body.append(
-            f'<p class="experience-company">{_highlight(item.get("company", ""), terms)}</p>'
-        )
-        body.append(f'<p class="experience-role">{_highlight(item.get("role", ""), terms)}</p>')
+        company = _highlight(item.get("company", ""), terms)
+        role = _highlight(item.get("role", ""), terms)
+        responsibilities = item.get("responsibilities") or []
+        if not any((company, role, meta, responsibilities)):
+            continue
+        if company:
+            body.append(f'<p class="experience-company">{company}</p>')
+        if role:
+            body.append(f'<p class="experience-role">{role}</p>')
         if meta:
             body.append(f'<p class="experience-meta">{meta}</p>')
-        responsibilities = item.get("responsibilities") or []
         if responsibilities:
             body.append(
                 "<ul>"
@@ -308,8 +343,10 @@ def render_normalized_cv(
     """
     locale = "en" if language == "en" else "es"
     labels = _LABELS[locale]
-    public_cv = _sanitize_for_public_cv(normalized_cv, normalized_cv.get("location"))
-    full_name = _e(public_cv.get("full_name", "Candidate"))
+    public_cv = _omit_missing_values(
+        _sanitize_for_public_cv(normalized_cv, normalized_cv.get("location"))
+    )
+    full_name = _e(public_cv.get("full_name", ""))
     title = _highlight(public_cv.get("title", ""), highlight_terms)
     profile = _highlight(public_cv.get("professional_profile", ""), highlight_terms)
     sections = "".join(
@@ -321,9 +358,12 @@ def render_normalized_cv(
             _section_experience(public_cv.get("experience") or [], labels, highlight_terms),
         )
     )
+    header = f"<h1>{full_name}</h1>" if full_name else ""
+    if title:
+        header += f'<p class="cv-title">{title}</p>'
+    profile_section = f'{_heading(labels["profile"])}<p>{profile}</p>' if profile else ""
     body = f"""<html><body>
-<h1>{full_name}</h1><p class="cv-title">{title}</p>
-{_heading(labels["profile"])}<p>{profile}</p>{sections}
+{header}{profile_section}{sections}
 </body></html>"""
     buffer = io.BytesIO()
     story = fitz.Story(html=body, user_css=_CSS)

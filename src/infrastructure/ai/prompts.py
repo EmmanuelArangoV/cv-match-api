@@ -58,7 +58,7 @@ Return a JSON object with EXACTLY this schema:
     {
       "company": "<string>",
       "role": "<string>",
-      "employment_type": "<Full-time | Part-time | Intern | Contractor | Freelance | Unknown>",
+      "employment_type": "<Full-time | Part-time | Intern | Contractor | Freelance | null>",
       "responsibilities": ["<string>"],
       "start_year": <number | null>,
       "end_year": <number | null>,
@@ -75,8 +75,8 @@ Return a JSON object with EXACTLY this schema:
   "languages": [
     {
       "language": "<string>",
-      "level_cefr": "<A1 | A2 | B1 | B2 | C1 | C2 | Native | Unknown>",
-      "level_original": "<string — as written in the CV>"
+      "level_cefr": "<A1 | A2 | B1 | B2 | C1 | C2 | Native | null>",
+      "level_original": "<string | null — as written in the CV>"
     }
   ],
   "technical_skills": {
@@ -285,19 +285,21 @@ willing to relocate", availability constraints stated as blocking).
 has no clear items, return an empty array.
 
 PART 2 — ENRICH (here, and only here, you may add and improve):
-- `enhanced_jd`: a significantly improved, structured, persuasive rewrite of the JD in Markdown, \
-professional and modern in tone, organized into clear sections (About the role, \
-Responsibilities, Must-haves, Nice-to-haves, Benefits). Intelligently deduce soft and hard \
-skills that are standard for the role but missing from the draft, without inventing a \
-completely different tech stack.
+- `enhanced_jd`: a significantly improved, structured, persuasive rewrite of the JD as plain \
+text. Keep a professional, modern tone and organize it with short section labels on their own \
+lines (for example: "Sobre el cargo", "Responsabilidades", "Requisitos", "Beneficios"), \
+separated by blank lines. Do not use Markdown syntax or decorators: no headings with `#`, \
+asterisks, underscores, backticks, bullet lists, numbered lists, tables, horizontal rules or \
+links. Intelligently deduce soft and hard skills that are standard for the role but missing from \
+the draft, without inventing a completely different tech stack.
 - `recommendations`: concrete suggestions to improve the JD (e.g. missing salary info, lack of \
 company culture details, vague responsibilities).
 - `missing_elements`: structural elements the recruiter should consider adding (e.g. location, \
 seniority, budget, team size).
 
 IMPORTANT RULES:
-1. Return ONLY valid JSON — no markdown, no extra text, no code fences around the JSON itself \
-(the markdown formatting belongs INSIDE the `enhanced_jd` string value).
+1. Return ONLY valid JSON — no markdown, no extra text, no code fences around the JSON itself. \
+The `enhanced_jd` string must be plain text, without Markdown syntax.
 2. Part 1 must be strictly extractive; Part 2 is where enrichment happens.
 3. LANGUAGE: write every field (must_have, nice_to_have, deal_breakers, summary, enhanced_jd, \
 recommendations, missing_elements) in Spanish, regardless of the language of the input JD.
@@ -309,7 +311,7 @@ Return a JSON object with EXACTLY this schema:
   "nice_to_have": ["<string>"],
   "deal_breakers": ["<string>"],
   "summary": "<string>",
-  "enhanced_jd": "<string — full improved JD formatted in Markdown>",
+  "enhanced_jd": "<string — full improved JD in plain text>",
   "recommendations": ["<string>"],
   "missing_elements": ["<string>"]
 }

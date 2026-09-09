@@ -4,7 +4,12 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.deps import RequireAdmin, RequireTALeader, get_current_user, get_db
+from src.api.deps import (
+    RequireAdmin,
+    RequireTALeader,
+    get_current_user_including_password_change,
+    get_db,
+)
 from src.application.auth.users_use_cases import (
     CreateUserUseCase,
     DeleteUserUseCase,
@@ -31,6 +36,7 @@ class UserResponse(BaseModel):
     email: str
     role: UserRole
     status: UserStatus
+    password_change_required: bool
     created_at: str
 
     @classmethod
@@ -42,6 +48,7 @@ class UserResponse(BaseModel):
             email=user.email,
             role=user.role,
             status=user.status,
+            password_change_required=bool(user.password_change_required),
             created_at=user.created_at.isoformat(),
         )
 
@@ -83,7 +90,7 @@ async def list_users(
 
 @router.get("/me", response_model=UserResponse)
 async def get_me(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_including_password_change),
 ) -> UserResponse:
     return UserResponse.from_domain(current_user)
 

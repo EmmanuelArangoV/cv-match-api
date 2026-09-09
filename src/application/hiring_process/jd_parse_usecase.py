@@ -10,6 +10,7 @@ de decidir aplicarlo y guardarlo.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 
 from openai import AsyncOpenAI
@@ -26,6 +27,31 @@ from src.infrastructure.costs import (
     record_cost_async,
 )
 from src.infrastructure.db.models import OperationType
+
+
+def _plain_text_jd(value: object) -> str:
+    """Elimina sintaxis Markdown de la JD enriquecida antes de exponerla.
+
+    El prompt global puede personalizarse desde Admin. Esta normalización evita que
+    una versión histórica o personalizada vuelva a introducir decoradores Markdown
+    en el campo que el recruiter edita y guarda como texto plano.
+    """
+    if not isinstance(value, str):
+        return ""
+
+    text = value.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"(?m)^[ \t]*```[^\n]*$", "", text)
+    text = re.sub(r"(?m)^[ \t]{0,3}#{1,6}[ \t]+", "", text)
+    text = re.sub(r"(?m)^[ \t]*(?:[-+*]|\d+[.)])[ \t]+", "", text)
+    text = re.sub(r"(?m)^[ \t]{0,3}(?:[-*_][ \t]*){3,}$", "", text)
+    text = re.sub(r"!?\[([^\]]+)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"(?:\*\*|__)(.+?)(?:\*\*|__)", r"\1", text)
+    text = re.sub(r"~~(.+?)~~", r"\1", text)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = re.sub(r"(?<!\w)[*_]([^*_\n]+)[*_](?!\w)", r"\1", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 class ParseJobDescriptionUseCase:
@@ -111,12 +137,14 @@ class ParseJobDescriptionUseCase:
                 "La IA devolvio una respuesta invalida al analizar la Job Description."
             ) from exc
 
+        enhanced_jd = _plain_text_jd(result.get("enhanced_jd")) or _plain_text_jd(raw_text)
+
         return {
             "must_have": result.get("must_have", []),
             "nice_to_have": result.get("nice_to_have", []),
             "deal_breakers": result.get("deal_breakers", []),
             "summary": result.get("summary", ""),
-            "enhanced_jd": result.get("enhanced_jd", raw_text),
+            "enhanced_jd": enhanced_jd,
             "recommendations": result.get("recommendations", []),
             "missing_elements": result.get("missing_elements", []),
         }

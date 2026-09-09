@@ -62,3 +62,22 @@ def test_normalized_pdf_redacts_contact_data_and_localizes_sections() -> None:
     assert "Medellín, Colombia" not in text
     assert "linkedin.example" not in text
     assert "github.example" not in text
+
+
+def test_normalized_pdf_omits_unknown_optional_values() -> None:
+    profile = _profile()
+    profile["experience"][0]["employment_type"] = "Unknown"
+    profile["languages"] = [
+        {
+            "language": "English",
+            "level_cefr": "Unknown",
+            "level_original": "Unknown",
+        }
+    ]
+
+    pdf_bytes = render_normalized_cv(profile, language="en")
+    document = fitz.open(stream=pdf_bytes, filetype="pdf")
+    text = "".join(page.get_text() for page in document)
+
+    assert "Unknown" not in text
+    assert "English" in text
