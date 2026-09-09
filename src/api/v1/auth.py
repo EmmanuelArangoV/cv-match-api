@@ -4,8 +4,14 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.api.deps import get_current_user_including_password_change
 from src.application.auth.orbita_use_case import OrbitaLoginUseCase
-from src.application.auth.use_cases import LoginUseCase, LogoutUseCase, RefreshTokenUseCase
+from src.application.auth.use_cases import (
+    CompleteInitialPasswordChangeUseCase,
+    LoginUseCase,
+    LogoutUseCase,
+    RefreshTokenUseCase,
+)
 from src.config import settings
 from src.domain.shared.exceptions import ServiceUnavailableException
 from src.infrastructure.auth.orbita_sso import (
@@ -15,6 +21,7 @@ from src.infrastructure.auth.orbita_sso import (
     OrbitaSsoUnavailableError,
 )
 from src.infrastructure.db.database import get_db
+from src.infrastructure.db.models import User
 from src.infrastructure.db.repositories.user_repository import UserRepository
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -34,11 +41,16 @@ class TokenResponse(BaseModel):
     refresh_token: str
     token_type: str
     role: str
+    password_change_required: bool = False
 
 
 class RefreshTokenResponse(TokenResponse):
     expires_in: int | None = None
     session_expires_in: int | None = None
+
+
+class ChangeInitialPasswordRequest(BaseModel):
+    new_password: str = Field(min_length=8)
 
 
 class OrbitaAuthorizeUrlResponse(BaseModel):
@@ -91,6 +103,21 @@ async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)) -> d
 @router.post("/logout", status_code=204)
 async def logout(body: RefreshRequest) -> None:
     await LogoutUseCase().execute(body.refresh_token)
+
+
+@router.post("/change-initial-password", status_code=204)
+async def change_initial_password(
+    body: ChangeInitialPasswordRequest,
+    current_user: User = Depends(get_current_user_including_password_change),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    user = await CompleteInitialPasswordChangeUseCase(UserRepository(db)).execute(
+        current_user, body.new_password
+    )
+    from src.infrastructure.db.audit import record_audit
+
+    record_audit(db, user.id, "USER_INITIAL_PASSWORD_CHANGED", "User", user.id)
+    await db.commit()
 
 
 @router.get("/orbita/authorize-url", response_model=OrbitaAuthorizeUrlResponse)

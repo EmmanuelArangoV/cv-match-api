@@ -27,6 +27,7 @@ class CreateUserUseCase:
             last_name=user_data["last_name"],
             email=user_data["email"],
             password_hash=hash_password(user_data["password"]),
+            password_change_required=True,
             role=user_data["role"],
             status=UserStatus.ACTIVE.value,
         )

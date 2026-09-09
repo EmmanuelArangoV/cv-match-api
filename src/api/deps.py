@@ -14,7 +14,7 @@ _bearer = HTTPBearer()
 _bearer_optional = HTTPBearer(auto_error=False)
 
 
-async def get_current_user(
+async def get_current_user_including_password_change(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
     db: AsyncSession = Depends(get_db),
 ) -> User:
@@ -23,6 +23,14 @@ async def get_current_user(
     if not user or user.status != UserStatus.ACTIVE.value:
         raise UnauthorizedException("Usuario no encontrado o suspendido")
     return user
+
+
+async def get_current_user(
+    current_user: User = Depends(get_current_user_including_password_change),
+) -> User:
+    if current_user.password_change_required:
+        raise ForbiddenException("Debes cambiar tu contraseña antes de continuar")
+    return current_user
 
 
 async def get_current_user_with_query(
@@ -43,6 +51,8 @@ async def get_current_user_with_query(
     user = await UserRepository(db).find_by_id(payload["sub"])
     if not user or user.status != UserStatus.ACTIVE.value:
         raise UnauthorizedException("Usuario no encontrado o suspendido")
+    if user.password_change_required:
+        raise ForbiddenException("Debes cambiar tu contraseña antes de continuar")
     return user
 
 

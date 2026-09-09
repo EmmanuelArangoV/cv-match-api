@@ -1,15 +1,15 @@
 from datetime import UTC, datetime, timedelta
 
 from src.config import settings
-from src.domain.shared.exceptions import UnauthorizedException
-from src.infrastructure.auth.password import verify_password
+from src.domain.shared.exceptions import BusinessRuleException, UnauthorizedException
+from src.infrastructure.auth.password import hash_password, verify_password
 from src.infrastructure.auth.refresh_tokens import (
     get_refresh_session,
     revoke_refresh_token,
     store_refresh_token,
 )
 from src.infrastructure.auth.tokens import create_access_token, create_refresh_token
-from src.infrastructure.db.models import UserStatus
+from src.infrastructure.db.models import User, UserStatus
 from src.infrastructure.db.repositories.user_repository import UserRepository
 
 
@@ -35,6 +35,7 @@ class LoginUseCase:
             "refresh_token": refresh_token,
             "token_type": "bearer",
             "role": user.role,
+            "password_change_required": bool(user.password_change_required),
         }
 
 
@@ -92,3 +93,16 @@ class RefreshTokenUseCase:
 class LogoutUseCase:
     async def execute(self, refresh_token: str) -> None:
         await revoke_refresh_token(refresh_token)
+
+
+class CompleteInitialPasswordChangeUseCase:
+    def __init__(self, user_repo: UserRepository) -> None:
+        self._repo = user_repo
+
+    async def execute(self, user: User, new_password: str) -> User:
+        if not user.password_change_required or not user.password_hash:
+            raise BusinessRuleException("No tienes un cambio de contraseña pendiente")
+
+        user.password_hash = hash_password(new_password)
+        user.password_change_required = False
+        return await self._repo.save(user)
