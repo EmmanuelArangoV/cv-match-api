@@ -1,7 +1,8 @@
 import uuid
 from decimal import Decimal
+from typing import Literal
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -165,15 +166,20 @@ async def list_candidates(
             "match_percentage": float(pc.match_percentage),
             "match_category": pc.match_category,
             "whatsapp_consent": pc.effective_whatsapp_consent_status,
-            "normalized_cv_url": pc.candidate.normalized_cv_url,
+            "normalized_cv_url": (
+                pc.cv_version.normalized_file_url_es or pc.cv_version.normalized_file_url
+            ),
+            "normalized_cv_urls": {
+                "es": pc.cv_version.normalized_file_url_es or pc.cv_version.normalized_file_url,
+                "en": pc.cv_version.normalized_file_url_en,
+            },
             "total_cost": round(cost_by_candidate.get(pc.candidate_id, 0.0), 6),
             "availability_preference": pc.availability_preference,
         }
         # Profile fields from normalized CV
-        profile = pc.candidate.normalized_cv or {}
-        entry["city"] = (
-            profile.get("location", "").split(",")[0].strip() if profile.get("location") else None
-        )
+        profile = pc.cv_version.normalized_cv or {}
+        location = profile.get("location")
+        entry["city"] = location.split(",")[0].strip() if isinstance(location, str) else None
         # Añadir resumen del match si ya fue procesado
         if explanation:
             entry["match_summary"] = explanation.get("summary")
@@ -204,6 +210,7 @@ async def get_candidate_detail(
 
     explanation = pc.match_explanation or {}
     candidate = pc.candidate
+    cv_version = pc.cv_version
 
     cost_logs_result = await db.execute(
         select(CostLog)
@@ -220,9 +227,14 @@ async def get_candidate_detail(
             "name": f"{candidate.name} {candidate.last_name}",
             "email": candidate.email,
             "phone": candidate.phone,
-            "cv_url": candidate.cv_file_url,
-            "normalized_cv_url": candidate.normalized_cv_url,
-            "profile": candidate.normalized_cv,
+            "cv_url": cv_version.original_file_url,
+            "normalized_cv_url": cv_version.normalized_file_url_es
+            or cv_version.normalized_file_url,
+            "normalized_cv_urls": {
+                "es": cv_version.normalized_file_url_es or cv_version.normalized_file_url,
+                "en": cv_version.normalized_file_url_en,
+            },
+            "profile": cv_version.normalized_cv,
         },
         "status": pc.status,
         "whatsapp_consent": pc.effective_whatsapp_consent_status,
@@ -304,7 +316,7 @@ async def get_candidate_cv_file(
     if not pc or pc.process_id != process_id:
         raise NotFoundException("Candidato no encontrado en este proceso")
 
-    r2_key = pc.candidate.cv_file_url
+    r2_key = pc.cv_version.original_file_url
     if not r2_key:
         raise NotFoundException("Este candidato no tiene CV original adjunto.")
 
@@ -352,6 +364,7 @@ async def send_candidate_whatsapp(
 async def get_candidate_normalized_cv_file(
     process_id: uuid.UUID,
     process_candidate_id: uuid.UUID,
+    language: Literal["es", "en"] = Query("es"),
     current_user: User = RequireRecruiterWithQuery,
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
@@ -362,9 +375,15 @@ async def get_candidate_normalized_cv_file(
     if not pc or pc.process_id != process_id:
         raise NotFoundException("Candidato no encontrado en este proceso")
 
-    r2_key = pc.candidate.normalized_cv_url
+    r2_key = (
+        pc.cv_version.normalized_file_url_es or pc.cv_version.normalized_file_url
+        if language == "es"
+        else pc.cv_version.normalized_file_url_en
+    )
     if not r2_key:
-        raise NotFoundException("Este candidato no tiene CV normalizado adjunto.")
+        raise NotFoundException(
+            "Este candidato no tiene la variante solicitada del CV normalizado adjunta."
+        )
 
     presigned = await r2_client.generate_presigned_url(r2_key, expires_in=3600)
     return RedirectResponse(url=presigned, status_code=302)
@@ -405,9 +424,9 @@ async def update_candidate(
         candidate.phone = body.phone.strip() if body.phone.strip() else None
 
     if body.city is not None:
-        prof = dict(candidate.normalized_cv or {})
+        prof = dict(pc.cv_version.normalized_cv or {})
         prof["location"] = body.city.strip() if body.city.strip() else ""
-        candidate.normalized_cv = prof
+        pc.cv_version.normalized_cv = prof
 
     from src.infrastructure.db.audit import record_audit
 

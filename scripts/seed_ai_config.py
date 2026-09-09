@@ -21,6 +21,7 @@ from sqlalchemy import select
 from src.application.candidate.whatsapp_message_usecase import _AGENT_SYSTEM_PROMPT
 from src.infrastructure.ai.prompts import (
     CV_EXTRACTION_PROMPT,
+    CV_TRANSLATION_PROMPT,
     JD_ANALYZE_ENHANCE_SYSTEM_PROMPT,
     MATCH_SYSTEM_PROMPT,
     PROFILING_EVALUATION_PROMPT,
@@ -31,6 +32,7 @@ from src.infrastructure.db.models import AIModelConfiguration, AIPrompt, AIProvi
 
 PROMPTS = {
     AITaskType.CV_EXTRACTION: CV_EXTRACTION_PROMPT,
+    AITaskType.CV_TRANSLATION: CV_TRANSLATION_PROMPT,
     AITaskType.CV_MATCH: MATCH_SYSTEM_PROMPT,
     AITaskType.JD_ENHANCEMENT: JD_ANALYZE_ENHANCE_SYSTEM_PROMPT,
     AITaskType.VOICE_PROFILING: PROFILING_EVALUATION_PROMPT,
@@ -40,6 +42,7 @@ PROMPTS = {
 
 MODELS = {
     AITaskType.CV_EXTRACTION: "gpt-5.6-luna",
+    AITaskType.CV_TRANSLATION: "gpt-5.6-luna",
     AITaskType.CV_MATCH: "gpt-5.6-luna",
     AITaskType.JD_ENHANCEMENT: "gpt-5.6-luna",
     AITaskType.VOICE_PROFILING: "gpt-5.6-luna",

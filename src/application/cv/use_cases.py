@@ -13,6 +13,7 @@ from src.domain.hiring_process.state_machine import HiringProcessStateMachine
 from src.domain.shared.exceptions import BusinessRuleException, NotFoundException
 from src.infrastructure.db.models import (
     Candidate,
+    CandidateCVVersion,
     CandidateStatus,
     ProcessCandidate,
     ProcessStatus,
@@ -137,9 +138,10 @@ class UploadCVsUseCase:
         results: list[UploadResult] = []
 
         for filename, ext, content, file_hash in file_meta:
-            existing_candidate = await self._candidate_repo.find_by_cv_file_hash(file_hash)
+            existing_cv_version = await self._candidate_repo.find_cv_version_by_file_hash(file_hash)
 
-            if existing_candidate:
+            if existing_cv_version:
+                existing_candidate = existing_cv_version.candidate
                 # El CV ya existe. Verificamos si ya está en este proceso.
                 existing_pc = await self._candidate_repo.find_process_candidate(
                     process_id, existing_candidate.id
@@ -160,14 +162,15 @@ class UploadCVsUseCase:
                 status = (
                     CandidateStatus.MATCH_PENDING.value
                     if (
-                        existing_candidate.normalized_cv is not None
-                        or existing_candidate.normalized_cv_url is not None
+                        existing_cv_version.normalized_cv is not None
+                        or existing_cv_version.normalized_file_url is not None
                     )
                     else CandidateStatus.LOADED.value
                 )
                 pc = ProcessCandidate(
                     process_id=process_id,
                     candidate_id=existing_candidate.id,
+                    cv_version_id=existing_cv_version.id,
                     status=status,
                     whatsapp_consent_status=WhatsAppConsentStatus.PENDING.value,
                 )
@@ -206,9 +209,18 @@ class UploadCVsUseCase:
                 )
                 await self._candidate_repo.save_candidate(candidate)
 
+                cv_version = CandidateCVVersion(
+                    candidate_id=candidate_id,
+                    original_file_url=r2_key,
+                    file_hash=file_hash,
+                )
+                self._db.add(cv_version)
+                await self._db.flush()
+
                 pc = ProcessCandidate(
                     process_id=process_id,
                     candidate_id=candidate_id,
+                    cv_version_id=cv_version.id,
                     status=CandidateStatus.LOADED.value,
                     whatsapp_consent_status=WhatsAppConsentStatus.PENDING.value,
                 )

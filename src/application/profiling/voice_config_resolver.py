@@ -37,32 +37,64 @@ def _pick[T](override: T | None, default: T | None) -> T | None:
     return override if override is not None else default
 
 
-_QUESTION_TYPE_HINTS: dict[QuestionType, str] = {
-    QuestionType.OPEN: "pregunta abierta",
-    QuestionType.CLOSED: "pregunta cerrada",
-    QuestionType.MULTIPLE_CHOICE: "pregunta de opción múltiple",
-    QuestionType.YES_NO: "pregunta de sí o no",
-    QuestionType.NUMERIC: "pregunta numérica",
+_GUIDED_ANSWER_TYPES = {
+    QuestionType.CLOSED,
+    QuestionType.MULTIPLE_CHOICE,
+    QuestionType.YES_NO,
+    QuestionType.NUMERIC,
 }
 
 
 def _build_questions_block(questions: list[ProfilingQuestion]) -> str:
-    """
-    Lista las preguntas del set con su tipo (OPEN/CLOSED/YES_NO/...) e instruye al agente
-    a anunciar el tipo en lenguaje natural antes de formular cada una — p. ej. "la siguiente
-    pregunta es de sí o no: ¿tienes experiencia con metodologías ágiles?".
-    """
+    """Agrupa el cuestionario en bloques conversacionales, sin exponer tipos técnicos."""
     ordered = sorted(questions, key=lambda q: q.order_index)
-    lines = [
-        f"{i}. [{_QUESTION_TYPE_HINTS.get(QuestionType(q.type), 'pregunta abierta')}] {q.text}"
-        for i, q in enumerate(ordered, start=1)
+    grouped_questions: list[tuple[bool, list[ProfilingQuestion]]] = []
+    for question in ordered:
+        try:
+            question_type = QuestionType(question.type)
+        except ValueError:
+            question_type = QuestionType.OPEN
+        is_guided = question_type in _GUIDED_ANSWER_TYPES
+        if not grouped_questions or grouped_questions[-1][0] != is_guided:
+            grouped_questions.append((is_guided, [question]))
+        else:
+            grouped_questions[-1][1].append(question)
+
+    sections = [
+        "Cuestionario de profiling. El orden y la intención de cada punto son obligatorios, "
+        "pero no debes recitar el guion: formula una pregunta a la vez, escucha la respuesta "
+        "completa y no leas etiquetas técnicas ni expliques la mecánica antes de cada pregunta.",
     ]
-    return (
-        "Preguntas del cuestionario de profiling, en este orden. Antes de formular cada "
-        "pregunta, anuncia brevemente en lenguaje natural qué tipo de pregunta es (por "
-        'ejemplo: "la siguiente pregunta es de sí o no", "esta es una pregunta abierta", '
-        '"esta pregunta tiene varias opciones para elegir") y luego hazla:\n' + "\n".join(lines)
+    question_number = 1
+    for is_guided, group in grouped_questions:
+        if is_guided:
+            sections.append(
+                "Información práctica y disponibilidad:\n"
+                "Puedes introducir este bloque una sola vez y con naturalidad, sin repetir el "
+                "texto literalmente: \"Ahora quiero conocer "
+                "algunos aspectos prácticos de tu disponibilidad. Puedes responder con la opción "
+                "o el dato concreto que mejor refleje tu situación; por ejemplo, sí o no cuando "
+                "aplique.\""
+            )
+        else:
+            sections.append(
+                "Experiencia o situación actual:\n"
+                "Puedes introducir este bloque una sola vez y con naturalidad, sin repetir el "
+                "texto literalmente: \"Para estas preguntas, cuéntame con base en tu experiencia "
+                "o situación actual.\""
+            )
+        sections.extend(
+            f"{index}. {question.text}"
+            for index, question in enumerate(group, question_number)
+        )
+        question_number += len(group)
+    sections.append(
+        "Mantén el ritmo humano: no uses marcadores como \"siguiente pregunta\", \"última "
+        "pregunta\" o \"ahora pasemos a\". No respondas automáticamente a cada dato corto; "
+        "reconoce solo respuestas que aporten contexto personal y, como máximo, dos veces en "
+        "todo el cuestionario."
     )
+    return "\n\n".join(sections)
 
 
 def _build_consent_note(whatsapp_consent_status: str | None) -> str:

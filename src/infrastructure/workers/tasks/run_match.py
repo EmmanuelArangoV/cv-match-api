@@ -1,6 +1,6 @@
 """
-Tarea Celery: ejecuta el match de un candidato contra la JD del proceso.
-Consume normalized_cv del candidato y jd_raw_text de la JobDescription activa.
+Tarea Celery: ejecuta el match de una versión de CV contra la JD del proceso.
+Consume el normalized_cv asociado a la postulación y jd_raw_text de la JobDescription activa.
 Guarda match_percentage, match_explanation (breakdown JSONB) y match_category.
 """
 
@@ -91,11 +91,14 @@ def execute_match(
     proc_uuid = uuid.UUID(process_id)
 
     with _SyncSession() as db:
-        # Cargar ProcessCandidate con candidato
+        # Cargar la postulación con su identidad y la versión concreta de CV.
         pc: ProcessCandidate = db.execute(
             select(ProcessCandidate)
             .where(ProcessCandidate.id == pc_uuid)
-            .options(selectinload(ProcessCandidate.candidate))
+            .options(
+                selectinload(ProcessCandidate.candidate),
+                selectinload(ProcessCandidate.cv_version),
+            )
         ).scalar_one_or_none()
 
         if not pc:
@@ -113,13 +116,14 @@ def execute_match(
         db.commit()
 
         candidate = pc.candidate
+        cv_version = pc.cv_version
 
         # RB-002: CV debe estar procesado
-        if not candidate.normalized_cv:
+        if not cv_version or not cv_version.normalized_cv:
             pc.status = CandidateStatus.MATCH_PENDING.value
             sync_process_status_sync(db, proc_uuid)
             db.commit()
-            return {"error": "CV not yet processed — normalized_cv is empty"}
+            return {"error": "CV version not yet processed — normalized_cv is empty"}
 
         # Cargar proceso con JD activa (la de mayor versión)
         process: HiringProcess = db.execute(
@@ -172,7 +176,7 @@ def execute_match(
             reasoning_tokens,
             response_id,
         ) = _call_openai_match(
-            normalized_cv=candidate.normalized_cv,
+            normalized_cv=cv_version.normalized_cv,
             jd_text=jd_text,
             weights=weights,
             thresholds=thresholds.to_dict(),

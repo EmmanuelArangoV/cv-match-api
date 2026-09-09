@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.application.cv.use_cases import UploadCVsUseCase
-from src.infrastructure.db.models import HiringProcess, ProcessStatus
+from src.infrastructure.db.models import CandidateCVVersion, HiringProcess, ProcessStatus
 
 
 @pytest.mark.asyncio
@@ -28,8 +28,11 @@ async def test_cv_deduplication():
 
         mock_existing_candidate = MagicMock()
         mock_existing_candidate.id = uuid.uuid4()
-        mock_cand_repo_instance.find_by_cv_file_hash = AsyncMock(
-            return_value=mock_existing_candidate
+        mock_existing_cv_version = MagicMock(spec=CandidateCVVersion)
+        mock_existing_cv_version.id = uuid.uuid4()
+        mock_existing_cv_version.candidate = mock_existing_candidate
+        mock_cand_repo_instance.find_cv_version_by_file_hash = AsyncMock(
+            return_value=mock_existing_cv_version
         )
         mock_cand_repo_instance.count_by_process = AsyncMock(return_value=0)
 
@@ -65,6 +68,14 @@ async def test_cv_deduplication():
 @pytest.mark.asyncio
 async def test_new_cv_upload_only_persists_and_does_not_enqueue_parse():
     mock_db = AsyncMock()
+    created_cv_versions: list[CandidateCVVersion] = []
+
+    def track_added_model(model: object) -> None:
+        if isinstance(model, CandidateCVVersion):
+            model.id = uuid.uuid4()
+            created_cv_versions.append(model)
+
+    mock_db.add = MagicMock(side_effect=track_added_model)
     mock_process = HiringProcess(
         id=uuid.uuid4(), status=ProcessStatus.CVS_UPLOADED.value, budget_max_usd=100.0
     )
@@ -79,10 +90,13 @@ async def test_new_cv_upload_only_persists_and_does_not_enqueue_parse():
         mock_process_repo.return_value.find_by_id = AsyncMock(return_value=mock_process)
         candidate_repo = mock_cand_repo.return_value
         candidate_repo.count_by_process = AsyncMock(return_value=0)
-        candidate_repo.find_by_cv_file_hash = AsyncMock(return_value=None)
+        candidate_repo.find_cv_version_by_file_hash = AsyncMock(return_value=None)
+
+        persisted_process_candidates = []
 
         async def save_process_candidate(pc):
             pc.id = uuid.uuid4()
+            persisted_process_candidates.append(pc)
             return pc
 
         candidate_repo.save_process_candidate = AsyncMock(side_effect=save_process_candidate)
@@ -107,3 +121,6 @@ async def test_new_cv_upload_only_persists_and_does_not_enqueue_parse():
         assert results[0].status == "LOADED"
         parse_cv.delay.assert_not_called()
         upload.assert_awaited_once()
+        assert len(created_cv_versions) == 1
+        assert persisted_process_candidates[0].cv_version_id == created_cv_versions[0].id
+        assert created_cv_versions[0].original_file_url.endswith("/new.pdf")
