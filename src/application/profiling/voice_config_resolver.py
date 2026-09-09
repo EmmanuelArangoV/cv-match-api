@@ -48,49 +48,52 @@ _GUIDED_ANSWER_TYPES = {
 def _build_questions_block(questions: list[ProfilingQuestion]) -> str:
     """Agrupa el cuestionario en bloques conversacionales, sin exponer tipos técnicos."""
     ordered = sorted(questions, key=lambda q: q.order_index)
-    guided_questions: list[ProfilingQuestion] = []
-    exploratory_questions: list[ProfilingQuestion] = []
+    grouped_questions: list[tuple[bool, list[ProfilingQuestion]]] = []
     for question in ordered:
         try:
             question_type = QuestionType(question.type)
         except ValueError:
             question_type = QuestionType.OPEN
-        if question_type in _GUIDED_ANSWER_TYPES:
-            guided_questions.append(question)
+        is_guided = question_type in _GUIDED_ANSWER_TYPES
+        if not grouped_questions or grouped_questions[-1][0] != is_guided:
+            grouped_questions.append((is_guided, [question]))
         else:
-            exploratory_questions.append(question)
+            grouped_questions[-1][1].append(question)
 
     sections = [
-        "Cuestionario de profiling. Mantén una conversación fluida: formula una pregunta a la "
-        "vez, escucha la respuesta completa y no leas etiquetas técnicas ni expliques la "
-        "mecánica antes de cada pregunta.",
+        "Cuestionario de profiling. El orden y la intención de cada punto son obligatorios, "
+        "pero no debes recitar el guion: formula una pregunta a la vez, escucha la respuesta "
+        "completa y no leas etiquetas técnicas ni expliques la mecánica antes de cada pregunta.",
     ]
-    if guided_questions:
-        sections.extend(
-            [
+    question_number = 1
+    for is_guided, group in grouped_questions:
+        if is_guided:
+            sections.append(
                 "Información práctica y disponibilidad:\n"
-                "Introduce este bloque una sola vez, con naturalidad: \"Ahora quiero conocer "
+                "Puedes introducir este bloque una sola vez y con naturalidad, sin repetir el "
+                "texto literalmente: \"Ahora quiero conocer "
                 "algunos aspectos prácticos de tu disponibilidad. Puedes responder con la opción "
                 "o el dato concreto que mejor refleje tu situación; por ejemplo, sí o no cuando "
-                "aplique.\"",
-                *(
-                    f"{index}. {question.text}"
-                    for index, question in enumerate(guided_questions, start=1)
-                ),
-            ]
-        )
-    if exploratory_questions:
-        sections.extend(
-            [
+                "aplique.\""
+            )
+        else:
+            sections.append(
                 "Experiencia o situación actual:\n"
-                "Introduce este bloque una sola vez, con naturalidad: \"Para estas preguntas, "
-                "cuéntame con base en tu experiencia o situación actual.\"",
-                *(
-                    f"{index}. {question.text}"
-                    for index, question in enumerate(exploratory_questions, start=1)
-                ),
-            ]
+                "Puedes introducir este bloque una sola vez y con naturalidad, sin repetir el "
+                "texto literalmente: \"Para estas preguntas, cuéntame con base en tu experiencia "
+                "o situación actual.\""
+            )
+        sections.extend(
+            f"{index}. {question.text}"
+            for index, question in enumerate(group, question_number)
         )
+        question_number += len(group)
+    sections.append(
+        "Mantén el ritmo humano: no uses marcadores como \"siguiente pregunta\", \"última "
+        "pregunta\" o \"ahora pasemos a\". No respondas automáticamente a cada dato corto; "
+        "reconoce solo respuestas que aporten contexto personal y, como máximo, dos veces en "
+        "todo el cuestionario."
+    )
     return "\n\n".join(sections)
 
 

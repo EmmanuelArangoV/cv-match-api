@@ -33,7 +33,7 @@ PROCESS_PROMPT_TASKS = (
 
 DEFAULT_VOICE_GREETING = (
     "Hola {{candidate_name}}, soy el asistente virtual de Riwi. Te llamo por el proceso de "
-    "{{job_title}}; gracias por atender."
+    "{{job_title}}; gracias por atender. ¿Te queda bien que conversemos unos tres minutos?"
 )
 
 

@@ -137,7 +137,7 @@ def test_uses_settings_elevenlabs_agent_id_as_last_resort(monkeypatch):
     assert config.agent_id == "fallback-agent"
 
 
-def test_process_prompt_requests_brief_feedback_after_each_answer():
+def test_process_prompt_prioritizes_a_warm_and_non_repetitive_conversation():
     config = resolve_voice_config(
         _question_set(),
         _process(),
@@ -145,9 +145,10 @@ def test_process_prompt_requests_brief_feedback_after_each_answer():
         process_first_message="Hola",
     )
 
-    assert "Después de cada respuesta sustantiva" in config.system_prompt
-    assert "una sola frase" in config.system_prompt
-    assert "sin calificarlo, prometer resultados" in config.system_prompt
+    assert "¿Te queda bien que conversemos unos tres minutos?" in config.system_prompt
+    assert "máximo de dos reconocimientos breves" in config.system_prompt
+    assert "No necesitas reaccionar a cada dato corto" in config.system_prompt
+    assert "no prometas resultados" in config.system_prompt
 
 
 def test_question_block_groups_guided_and_exploratory_questions_without_type_labels():
@@ -177,6 +178,8 @@ def test_question_block_groups_guided_and_exploratory_questions_without_type_lab
     assert "Experiencia o situación actual" in config.system_prompt
     assert "Puedes responder con la opción o el dato concreto" in config.system_prompt
     assert "cuéntame con base en tu experiencia o situación actual" in config.system_prompt
+    assert "El orden y la intención de cada punto son obligatorios" in config.system_prompt
+    assert "como máximo, dos veces" in config.system_prompt
     assert "[" not in config.system_prompt
     assert "pregunta abierta" not in config.system_prompt
     assert "pregunta cerrada" not in config.system_prompt
