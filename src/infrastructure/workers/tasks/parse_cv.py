@@ -12,6 +12,8 @@ import base64
 import io
 import json
 import logging
+import re
+import unicodedata
 import uuid
 import zipfile
 
@@ -29,7 +31,7 @@ from src.infrastructure.costs import (
     extract_openai_usage,
     record_cost_sync,
 )
-from src.infrastructure.cv.pdf_renderer import render_normalized_cv
+from src.infrastructure.cv.pdf_renderer import extract_jd_highlight_terms, render_normalized_cv
 from src.infrastructure.storage.r2_client import download_file_sync, upload_file_sync
 from src.infrastructure.workers.celery_app import celery_app
 
@@ -191,6 +193,65 @@ def _call_openai(
     )
 
 
+def _profile_source_language(profile: dict[str, object]) -> str:
+    """Estimación conservadora para evitar traducir dos veces un mismo CV."""
+    text = json.dumps(profile, ensure_ascii=False).casefold()
+    spanish_markers = (" experiencia", " habilidades", " desarrollo", " trabajo", " empresa")
+    english_markers = (" experience", " skills", " development", " work", " company")
+    spanish_score = sum(text.count(marker) for marker in spanish_markers)
+    english_score = sum(text.count(marker) for marker in english_markers)
+    return "es" if spanish_score >= english_score else "en"
+
+
+def _normalized_cv_filename(language: str, candidate_name: object, job_title: object) -> str:
+    """Construye un nombre descargable, portable y sin datos de contacto."""
+
+    def _component(value: object, fallback: str) -> str:
+        text = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode()
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-")[:80]
+        return slug or fallback
+
+    prefix = "ES" if language == "es" else "EN"
+    return f"{prefix}_{_component(candidate_name, 'Candidato')}_{_component(job_title, 'Rol')}.pdf"
+
+
+def _call_translation_openai(
+    profile: dict[str, object], client: OpenAI, prompt: str, model: str, target_language: str
+) -> tuple[dict[str, object], int, int, int, int, int, str]:
+    """Hace exactamente una llamada adicional para construir el segundo idioma."""
+    target_name = "Spanish" if target_language == "es" else "English"
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    f"{prompt}\n\nTARGET LANGUAGE: {target_name}\n\n"
+                    "NORMALIZED CV JSON:\n"
+                    f"{json.dumps(profile, ensure_ascii=False)}"
+                ),
+            }
+        ],
+        response_format={"type": "json_object"},
+        **chat_completion_options(model, max_tokens=4096),
+    )
+    translated = json.loads(response.choices[0].message.content)
+    if not isinstance(translated, dict):
+        raise ValueError("La traducción del CV no devolvió un objeto JSON.")
+    tokens_in, tokens_out, cached_tokens, cache_write_tokens, reasoning_tokens = (
+        extract_openai_usage(response)
+    )
+    return (
+        translated,
+        tokens_in,
+        tokens_out,
+        cached_tokens,
+        cache_write_tokens,
+        reasoning_tokens,
+        str(response.id),
+    )
+
+
 def _build_extraction_prompt(prompt: str, analysis_context: str | None) -> str:
     """Añade el comentario del recruiter al prompt sin alterar el prompt configurable.
 
@@ -241,6 +302,7 @@ def parse_cv(
         CandidateStatus,
         CostLog,
         HiringProcess,
+        JobDescription,
         OperationType,
         ProcessCandidate,
     )
@@ -282,13 +344,9 @@ def parse_cv(
             from src.application.ai.process_prompt_resolver import get_effective_prompt_sync
             from src.infrastructure.cache.redis_client import get_active_ai_model_sync
 
-            prompt = get_effective_prompt_sync(
-                db, proc_uuid, "CV_EXTRACTION"
-            ).system_prompt_text
+            prompt = get_effective_prompt_sync(db, proc_uuid, "CV_EXTRACTION").system_prompt_text
             prompt = _build_extraction_prompt(prompt, pc.analysis_context)
-            model = get_active_ai_model_sync(
-                db, "CV_EXTRACTION", "OPENAI", DEFAULT_OPENAI_MODEL
-            )
+            model = get_active_ai_model_sync(db, "CV_EXTRACTION", "OPENAI", DEFAULT_OPENAI_MODEL)
             (
                 extracted,
                 tokens_in,
@@ -360,16 +418,69 @@ def parse_cv(
 
             # Perfil y artefactos pertenecen a la versión del CV, no a Candidate.
             cv_version.extracted_profile = extracted
-            cv_version.normalized_cv = extracted
+
+            # Se mantiene el idioma extraído y se construye solo su contraparte: una
+            # llamada pagada adicional por CV, auditada de forma independiente.
+            source_language = _profile_source_language(extracted)
+            translation_prompt = get_effective_prompt_sync(
+                db, proc_uuid, "CV_TRANSLATION"
+            ).system_prompt_text
+            translation_model = get_active_ai_model_sync(db, "CV_TRANSLATION", "OPENAI", model)
+            target_language = "en" if source_language == "es" else "es"
+            (
+                translated_profile,
+                translation_tokens_in,
+                translation_tokens_out,
+                translation_cached_tokens,
+                translation_cache_write_tokens,
+                translation_reasoning_tokens,
+                translation_response_id,
+            ) = _call_translation_openai(
+                extracted,
+                openai_client,
+                translation_prompt,
+                translation_model,
+                target_language,
+            )
+            translation_cost = calculate_openai_cost(
+                translation_model,
+                translation_tokens_in,
+                translation_tokens_out,
+                translation_cached_tokens,
+                translation_cache_write_tokens,
+                translation_reasoning_tokens,
+            )
+            with _SyncSession() as cost_db:
+                record_cost_sync(
+                    cost_db,
+                    process_id=proc_uuid,
+                    candidate_id=candidate.id,
+                    user_id=process.recruiter_id if process else None,
+                    operation_type=OperationType.CV_TRANSLATION.value,
+                    provider="OPENAI",
+                    model_used=translation_model,
+                    tokens_input=translation_tokens_in,
+                    tokens_cached=translation_cached_tokens,
+                    tokens_output=translation_tokens_out,
+                    estimated_cost=translation_cost.amount_usd,
+                    cost_source=translation_cost.source,
+                    external_reference=f"openai:{translation_response_id}",
+                    cost_breakdown=translation_cost.breakdown,
+                )
+                cost_db.commit()
+
+            spanish_profile = extracted if source_language == "es" else translated_profile
+            english_profile = extracted if source_language == "en" else translated_profile
+            # Español es la representación canónica existente para no cambiar el
+            # comportamiento del match ni los consumidores que leen normalized_cv.
+            cv_version.normalized_cv = spanish_profile
 
             # Generar Embedding para búsqueda semántica
             try:
                 profile_text = json.dumps(extracted, ensure_ascii=False)
                 embedding, embedding_tokens = _get_embedding(profile_text, openai_client)
                 cv_version.cv_embedding = embedding
-                embedding_cost = calculate_openai_cost(
-                    "text-embedding-3-small", embedding_tokens
-                )
+                embedding_cost = calculate_openai_cost("text-embedding-3-small", embedding_tokens)
                 task_reference = self.request.id or str(uuid.uuid4())
                 retry_number = int(getattr(self.request, "retries", 0) or 0)
                 with _SyncSession() as cost_db:
@@ -384,9 +495,7 @@ def parse_cv(
                         tokens_input=embedding_tokens,
                         estimated_cost=embedding_cost.amount_usd,
                         cost_source="openai_rate_card_no_provider_id",
-                        external_reference=(
-                            f"openai-embedding:{task_reference}:{retry_number}"
-                        ),
+                        external_reference=(f"openai-embedding:{task_reference}:{retry_number}"),
                         cost_breakdown={
                             **embedding_cost.breakdown,
                             "provider_reference_available": False,
@@ -418,19 +527,49 @@ def parse_cv(
                 if extracted.get("phone"):
                     candidate.phone = extracted["phone"][:20]
 
-            # Generar PDF normalizado en estilo BBLABS y subirlo a R2
-            normalized_pdf_bytes = render_normalized_cv(extracted)
-            original_key = cv_version.original_file_url
-            # Genera siempre una key _normalized.pdf independientemente de la extensión original
-            if "." in original_key.rsplit("/", 1)[-1]:
-                normalized_key = original_key.rsplit(".", 1)[0] + "_normalized.pdf"
-            else:
-                normalized_key = original_key + "_normalized.pdf"
-            upload_file_sync(normalized_key, normalized_pdf_bytes, "application/pdf")
-            cv_version.normalized_file_url = normalized_key
+            # Generar ambas variantes BBLABS y subirlas a R2.
+            active_jd: JobDescription | None = None
+            if process:
+                active_jd = (
+                    db.query(JobDescription)
+                    .filter(JobDescription.process_id == proc_uuid)
+                    .order_by(JobDescription.version.desc())
+                    .first()
+                )
+            highlight_terms = extract_jd_highlight_terms(
+                spanish_profile,
+                active_jd.jd_raw_text if active_jd else "",
+                active_jd.structured_jd if active_jd else None,
+            )
+            spanish_pdf_bytes = render_normalized_cv(
+                spanish_profile, language="es", highlight_terms=highlight_terms
+            )
+            english_pdf_bytes = render_normalized_cv(
+                english_profile, language="en", highlight_terms=highlight_terms
+            )
+            # La carpeta por versión evita sobrescribir CVs históricos del mismo candidato.
+            # El basename es el que el navegador usa al descargar desde la URL firmada de R2.
+            candidate_name = spanish_profile.get("full_name") or (
+                f"{candidate.name} {candidate.last_name}"
+            )
+            job_title = process.job_title if process else "Rol"
+            normalized_directory = f"cvs/{proc_uuid}/{cv_version.id}"
+            normalized_key_es = (
+                f"{normalized_directory}/{_normalized_cv_filename('es', candidate_name, job_title)}"
+            )
+            normalized_key_en = (
+                f"{normalized_directory}/{_normalized_cv_filename('en', candidate_name, job_title)}"
+            )
+            upload_file_sync(normalized_key_es, spanish_pdf_bytes, "application/pdf")
+            upload_file_sync(normalized_key_en, english_pdf_bytes, "application/pdf")
+            cv_version.normalized_file_url = normalized_key_es
+            cv_version.normalized_file_url_es = normalized_key_es
+            cv_version.normalized_file_url_en = normalized_key_en
 
             storage_cost = calculate_r2_cost(
-                bytes_stored=len(normalized_pdf_bytes), class_a_operations=1, class_b_operations=1
+                bytes_stored=len(spanish_pdf_bytes) + len(english_pdf_bytes),
+                class_a_operations=2,
+                class_b_operations=2,
             )
             with _SyncSession() as cost_db:
                 record_cost_sync(
@@ -440,13 +579,17 @@ def parse_cv(
                     user_id=process.recruiter_id if process else None,
                     operation_type=OperationType.CV_STORAGE.value,
                     provider="CLOUDFLARE_R2",
-                    model_used="r2-standard-normalized-cv",
+                    model_used="r2-standard-normalized-cv-bilingual",
                     estimated_cost=storage_cost.amount_usd,
                     cost_source=storage_cost.source,
                     external_reference=(
-                        f"r2-normalize:{normalized_key}:{self.request.id or uuid.uuid4()}"
+                        "r2-normalize-bilingual:"
+                        f"{normalized_key_es}:{self.request.id or uuid.uuid4()}"
                     ),
-                    cost_breakdown={**storage_cost.breakdown, "object_key": normalized_key},
+                    cost_breakdown={
+                        **storage_cost.breakdown,
+                        "object_keys": [normalized_key_es, normalized_key_en],
+                    },
                 )
                 cost_db.commit()
 

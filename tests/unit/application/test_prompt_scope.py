@@ -29,6 +29,7 @@ class _FakeSession:
 def test_prompt_task_ownership_is_explicit_and_complete():
     assert set(GLOBAL_RUNTIME_PROMPT_TASKS) == {
         "CV_EXTRACTION",
+        "CV_TRANSLATION",
         "CV_MATCH",
         "JD_ENHANCEMENT",
         "VOICE_PROFILING",

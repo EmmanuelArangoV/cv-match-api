@@ -131,6 +131,7 @@ class AdvancementProbability(enum.StrEnum):
 
 class AITaskType(enum.StrEnum):
     CV_EXTRACTION = "CV_EXTRACTION"
+    CV_TRANSLATION = "CV_TRANSLATION"
     CV_MATCH = "CV_MATCH"
     JD_ENHANCEMENT = "JD_ENHANCEMENT"
     VOICE_PROFILING = "VOICE_PROFILING"
@@ -148,6 +149,7 @@ class AIProvider(enum.StrEnum):
 class OperationType(enum.StrEnum):
     CV_STORAGE = "CV_STORAGE"
     CV_EXTRACTION = "CV_EXTRACTION"
+    CV_TRANSLATION = "CV_TRANSLATION"
     CV_EMBEDDING = "CV_EMBEDDING"
     CV_MATCH = "CV_MATCH"
     JD_ENHANCEMENT = "JD_ENHANCEMENT"
@@ -431,6 +433,8 @@ class CandidateCVVersion(Base):
     original_file_url: Mapped[str] = mapped_column(TEXT, nullable=False)
     file_hash: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     normalized_file_url: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    normalized_file_url_es: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    normalized_file_url_en: Mapped[str | None] = mapped_column(TEXT, nullable=True)
     extracted_profile: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
     normalized_cv: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
     cv_embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)

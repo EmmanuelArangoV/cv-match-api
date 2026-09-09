@@ -94,6 +94,20 @@ Now extract all information from the CV images provided.
 """
 
 # ---------------------------------------------------------------------------
+# CV TRANSLATION
+# ---------------------------------------------------------------------------
+
+CV_TRANSLATION_PROMPT = """\
+You translate a normalized CV JSON into the requested target language.
+
+Return ONLY one valid JSON object. Preserve the exact schema, keys, arrays,
+facts, dates, names, institutions, credentials and identifiers. Translate only
+human-readable values. Never translate technology, product, framework, library,
+programming-language, certification or company names. Do not infer, add, remove
+or redact data: rendering redacts contact data separately.
+"""
+
+# ---------------------------------------------------------------------------
 # MATCH CV vs JD
 # ---------------------------------------------------------------------------
 

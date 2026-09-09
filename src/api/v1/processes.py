@@ -1232,6 +1232,7 @@ async def get_process_metrics(
         "whatsapp": [OperationType.WHATSAPP_MESSAGE.value],
         "llm": [
             OperationType.CV_EXTRACTION.value,
+            OperationType.CV_TRANSLATION.value,
             OperationType.CV_EMBEDDING.value,
             OperationType.CV_MATCH.value,
             OperationType.JD_ENHANCEMENT.value,

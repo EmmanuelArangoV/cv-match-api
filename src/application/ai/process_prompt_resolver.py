@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from src.domain.shared.exceptions import BusinessRuleException
 from src.infrastructure.ai.prompts import (
     CV_EXTRACTION_PROMPT,
+    CV_TRANSLATION_PROMPT,
     JD_ANALYZE_ENHANCE_SYSTEM_PROMPT,
     MATCH_SYSTEM_PROMPT,
     PROFILING_EVALUATION_PROMPT,
@@ -20,6 +21,7 @@ from src.infrastructure.db.models import AIPrompt, AITaskType, ProcessAIPrompt
 
 GLOBAL_RUNTIME_PROMPT_TASKS = (
     AITaskType.CV_EXTRACTION.value,
+    AITaskType.CV_TRANSLATION.value,
     AITaskType.CV_MATCH.value,
     AITaskType.JD_ENHANCEMENT.value,
     AITaskType.VOICE_PROFILING.value,
@@ -39,6 +41,7 @@ def _fallback_prompt(task_type: str) -> str:
     """Fallback de bootstrap; las operaciones normales nunca llegan aquí."""
     fallbacks = {
         AITaskType.CV_EXTRACTION.value: CV_EXTRACTION_PROMPT,
+        AITaskType.CV_TRANSLATION.value: CV_TRANSLATION_PROMPT,
         AITaskType.CV_MATCH.value: MATCH_SYSTEM_PROMPT,
         AITaskType.JD_ENHANCEMENT.value: JD_ANALYZE_ENHANCE_SYSTEM_PROMPT,
         AITaskType.VOICE_PROFILING.value: PROFILING_EVALUATION_PROMPT,

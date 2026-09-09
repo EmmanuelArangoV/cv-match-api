@@ -25,6 +25,16 @@ def test_get_embedding_does_not_require_provider_response_id() -> None:
     assert tokens == 7
 
 
+def test_normalized_cv_filename_uses_language_candidate_and_role() -> None:
+    module = importlib.import_module("src.infrastructure.workers.tasks.parse_cv")
+
+    assert (
+        module._normalized_cv_filename("en", "María José / Gómez", "Senior Data Analyst")
+        == "EN_Maria-Jose-Gomez_Senior-Data-Analyst.pdf"
+    )
+    assert module._normalized_cv_filename("es", "", "") == "ES_Candidato_Rol.pdf"
+
+
 class _Query:
     def __init__(self, candidate: Candidate) -> None:
         self._candidate = candidate
@@ -152,10 +162,25 @@ def test_parse_cv_registers_cost_against_deduplicated_candidate() -> None:
             "_call_openai",
             side_effect=_openai_result,
         ),
+        patch.object(
+            module,
+            "_call_translation_openai",
+            return_value=(
+                {"email": existing.email, "full_name": "Existing Candidate"},
+                1,
+                1,
+                0,
+                0,
+                0,
+                "chatcmpl-translation",
+            ),
+        ),
         patch.object(module, "_get_embedding", side_effect=RuntimeError("sin embedding")),
         patch.object(module, "record_cost_sync", side_effect=_record_cost) as record_cost,
         patch.object(module, "render_normalized_cv", return_value=b"normalized"),
-        patch.object(module, "upload_file_sync", return_value="cvs/existing_normalized.pdf"),
+        patch.object(
+            module, "upload_file_sync", return_value="cvs/existing_normalized.pdf"
+        ) as upload_file_sync,
         patch.object(module, "sync_process_status_sync"),
         patch(
             "src.application.ai.process_prompt_resolver.get_effective_prompt_sync",
@@ -179,6 +204,10 @@ def test_parse_cv_registers_cost_against_deduplicated_candidate() -> None:
     assert cv_version.original_file_url == "cvs/original.pdf"
     assert cv_version.normalized_cv == {"email": existing.email, "full_name": "Candidato Existente"}
     assert existing.normalized_cv == {"full_name": "Perfil A"}
+    assert [call.args[0] for call in upload_file_sync.call_args_list] == [
+        f"cvs/{process_id}/{cv_version.id}/ES_Candidato-Existente_Rol.pdf",
+        f"cvs/{process_id}/{cv_version.id}/EN_Candidato-Existente_Rol.pdf",
+    ]
     openai_index = session.events.index("openai")
     cost_index = session.events.index("cost")
     assert "commit" in session.events[openai_index + 1 : cost_index]
