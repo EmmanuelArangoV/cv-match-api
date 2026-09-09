@@ -29,10 +29,14 @@ async def main() -> None:
         await connection.execute(
             text(
                 """
-                INSERT INTO users (id, name, last_name, email, password_hash, role, status)
-                VALUES (:id, 'Admin', 'QA', :email, :password_hash, 'ADMIN', 'ACTIVE')
+                INSERT INTO users
+                  (id, name, last_name, email, password_hash, role, status,
+                   password_change_required)
+                VALUES (:id, 'Admin', 'QA', :email, :password_hash, 'ADMIN', 'ACTIVE', false)
                 ON CONFLICT (id) DO UPDATE
-                SET email = EXCLUDED.email, password_hash = EXCLUDED.password_hash
+                SET email = EXCLUDED.email,
+                    password_hash = EXCLUDED.password_hash,
+                    password_change_required = false
                 """
             ),
             {"id": USER_ID, "email": USER_EMAIL, "password_hash": password_hash},
