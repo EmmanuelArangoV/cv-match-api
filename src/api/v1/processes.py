@@ -139,6 +139,18 @@ class UpdateWhatsAppTemplateAssignmentRequest(BaseModel):
     template_id: uuid.UUID
 
 
+def _can_assign_process_to_user(assigned_user: User, current_user: User) -> bool:
+    if assigned_user.status != UserStatus.ACTIVE.value:
+        return False
+    if assigned_user.role == UserRole.RECRUITER.value:
+        return True
+    return (
+        current_user.role == UserRole.TA_LEADER.value
+        and assigned_user.role == UserRole.TA_LEADER.value
+        and assigned_user.id == current_user.id
+    )
+
+
 def _require_process_prompt_editor(process: HiringProcess, current_user: User) -> None:
     if process.status in (ProcessStatus.CLOSED.value, ProcessStatus.ARCHIVED.value):
         raise BusinessRuleException("RB-009: Proceso cerrado o archivado")
@@ -202,16 +214,14 @@ async def create_process(
             raise BusinessRuleException(
                 "No tienes permiso para asignar procesos a otros recruiters."
             )
-        assigned_recruiter = await db.scalar(select(User).where(User.id == body.recruiter_id))
-        if (
-            not assigned_recruiter
-            or assigned_recruiter.role != UserRole.RECRUITER.value
-            or assigned_recruiter.status != UserStatus.ACTIVE.value
-        ):
-            raise BusinessRuleException("Selecciona un recruiter activo para asignar el proceso.")
-        recruiter_id = assigned_recruiter.id
+        assigned_user = await db.scalar(select(User).where(User.id == body.recruiter_id))
+        if not assigned_user or not _can_assign_process_to_user(assigned_user, current_user):
+            raise BusinessRuleException(
+                "Selecciona un recruiter activo. Un Líder TA solo puede asignarse a sí mismo."
+            )
+        recruiter_id = assigned_user.id
     elif current_user.role == UserRole.TA_LEADER.value:
-        raise BusinessRuleException("Selecciona un recruiter responsable para crear el proceso.")
+        raise BusinessRuleException("Selecciona una persona responsable para crear el proceso.")
 
     default_whatsapp_template = await db.scalar(
         select(WhatsAppTemplate).where(
