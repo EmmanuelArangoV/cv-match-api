@@ -405,6 +405,42 @@ class Candidate(Base):
     )
 
     process_candidates: Mapped[list["ProcessCandidate"]] = relationship(back_populates="candidate")
+    cv_versions: Mapped[list["CandidateCVVersion"]] = relationship(
+        back_populates="candidate", cascade="all, delete-orphan"
+    )
+
+
+class CandidateCVVersion(Base):
+    """Archivo y perfil extraído de una versión concreta de hoja de vida.
+
+    ``Candidate`` conserva la identidad global; esta entidad conserva el documento que se
+    usó en una postulación y evita que un CV nuevo sobrescriba el historial de otro proceso.
+    Las columnas homónimas de ``Candidate`` se mantienen como snapshot heredado para una
+    migración reversible, pero los flujos vigentes deben leer esta versión.
+    """
+
+    __tablename__ = "candidate_cv_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("candidates.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    original_file_url: Mapped[str] = mapped_column(TEXT, nullable=False)
+    file_hash: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    normalized_file_url: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    extracted_profile: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    normalized_cv: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    cv_embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    candidate: Mapped["Candidate"] = relationship(back_populates="cv_versions")
+    process_candidates: Mapped[list["ProcessCandidate"]] = relationship(back_populates="cv_version")
 
 
 class ProcessCandidate(Base):
@@ -416,6 +452,11 @@ class ProcessCandidate(Base):
     )
     candidate_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    cv_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("candidate_cv_versions.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     status: Mapped[CandidateStatus] = mapped_column(
         String(50), nullable=False, default=CandidateStatus.LOADED
@@ -473,6 +514,7 @@ class ProcessCandidate(Base):
 
     process: Mapped["HiringProcess"] = relationship(back_populates="process_candidates")
     candidate: Mapped["Candidate"] = relationship(back_populates="process_candidates")
+    cv_version: Mapped["CandidateCVVersion"] = relationship(back_populates="process_candidates")
     profiling_runs: Mapped[list["ProfilingRun"]] = relationship(back_populates="process_candidate")
 
 

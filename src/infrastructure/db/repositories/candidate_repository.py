@@ -6,6 +6,7 @@ from sqlalchemy.orm import selectinload
 
 from src.infrastructure.db.models import (
     Candidate,
+    CandidateCVVersion,
     ProcessCandidate,
 )
 
@@ -22,11 +23,14 @@ class CandidateRepository:
         result = await self._db.execute(select(Candidate).where(Candidate.email == email))
         return result.scalar_one_or_none()
 
-    async def find_by_cv_file_hash(self, file_hash: str) -> Candidate | None:
+    async def find_cv_version_by_file_hash(self, file_hash: str) -> CandidateCVVersion | None:
         result = await self._db.execute(
-            select(Candidate).where(Candidate.cv_file_hash == file_hash)
+            select(CandidateCVVersion)
+            .where(CandidateCVVersion.file_hash == file_hash)
+            .options(selectinload(CandidateCVVersion.candidate))
+            .order_by(CandidateCVVersion.created_at)
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def save_candidate(self, candidate: Candidate) -> Candidate:
         self._db.add(candidate)
@@ -44,7 +48,10 @@ class CandidateRepository:
         result = await self._db.execute(
             select(ProcessCandidate)
             .where(ProcessCandidate.process_id == process_id)
-            .options(selectinload(ProcessCandidate.candidate))
+            .options(
+                selectinload(ProcessCandidate.candidate),
+                selectinload(ProcessCandidate.cv_version),
+            )
             .order_by(ProcessCandidate.match_percentage.desc())
         )
         return list(result.scalars().all())
@@ -53,7 +60,10 @@ class CandidateRepository:
         result = await self._db.execute(
             select(ProcessCandidate)
             .where(ProcessCandidate.id == pc_id)
-            .options(selectinload(ProcessCandidate.candidate))
+            .options(
+                selectinload(ProcessCandidate.candidate),
+                selectinload(ProcessCandidate.cv_version),
+            )
         )
         return result.scalar_one_or_none()
 

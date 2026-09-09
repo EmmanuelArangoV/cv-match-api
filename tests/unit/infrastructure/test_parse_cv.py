@@ -3,7 +3,12 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from src.infrastructure.db.models import Candidate, CandidateStatus, ProcessCandidate
+from src.infrastructure.db.models import (
+    Candidate,
+    CandidateCVVersion,
+    CandidateStatus,
+    ProcessCandidate,
+)
 
 
 def test_get_embedding_does_not_require_provider_response_id() -> None:
@@ -30,11 +35,20 @@ class _Query:
     def first(self) -> Candidate:
         return self._candidate
 
+    def update(self, *args: object, **kwargs: object) -> None:
+        return None
+
 
 class _Session:
-    def __init__(self, original: Candidate, process_candidate: ProcessCandidate) -> None:
+    def __init__(
+        self,
+        original: Candidate,
+        process_candidate: ProcessCandidate,
+        cv_version: CandidateCVVersion,
+    ) -> None:
         self.original = original
         self.process_candidate = process_candidate
+        self.cv_version = cv_version
         self.added: list[object] = []
         self.deleted: list[object] = []
         self.events: list[str] = []
@@ -50,6 +64,8 @@ class _Session:
             return self.original
         if model is ProcessCandidate:
             return self.process_candidate
+        if model is CandidateCVVersion:
+            return self.cv_version
         return None
 
     def query(self, model: type) -> _Query:
@@ -92,13 +108,20 @@ def test_parse_cv_registers_cost_against_deduplicated_candidate() -> None:
         email="candidate@example.com",
         cv_file_url="cvs/existing.pdf",
     )
+    existing.normalized_cv = {"full_name": "Perfil A"}
+    cv_version = CandidateCVVersion(
+        id=uuid.uuid4(),
+        candidate_id=original_id,
+        original_file_url="cvs/original.pdf",
+    )
     process_candidate = ProcessCandidate(
         id=process_candidate_id,
         process_id=process_id,
         candidate_id=original_id,
+        cv_version_id=cv_version.id,
         status=CandidateStatus.CV_PROCESSING.value,
     )
-    session = _Session(original, process_candidate)
+    session = _Session(original, process_candidate, cv_version)
     session.existing = existing
 
     def _openai_result(
@@ -152,6 +175,10 @@ def test_parse_cv_registers_cost_against_deduplicated_candidate() -> None:
     assert result["candidate_id"] == str(existing_id)
     assert record_cost.call_args.kwargs["candidate_id"] == existing_id
     assert process_candidate.candidate_id == existing_id
+    assert cv_version.candidate_id == existing_id
+    assert cv_version.original_file_url == "cvs/original.pdf"
+    assert cv_version.normalized_cv == {"email": existing.email, "full_name": "Candidato Existente"}
+    assert existing.normalized_cv == {"full_name": "Perfil A"}
     openai_index = session.events.index("openai")
     cost_index = session.events.index("cost")
     assert "commit" in session.events[openai_index + 1 : cost_index]

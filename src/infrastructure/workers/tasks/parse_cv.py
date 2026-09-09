@@ -237,7 +237,9 @@ def parse_cv(
 ) -> dict:
     from src.infrastructure.db.models import (
         Candidate,
+        CandidateCVVersion,
         CandidateStatus,
+        CostLog,
         HiringProcess,
         OperationType,
         ProcessCandidate,
@@ -251,9 +253,12 @@ def parse_cv(
         try:
             candidate: Candidate = db.get(Candidate, cand_uuid)
             pc: ProcessCandidate = db.get(ProcessCandidate, pc_uuid)
+            cv_version: CandidateCVVersion | None = (
+                db.get(CandidateCVVersion, pc.cv_version_id) if pc else None
+            )
 
-            if not candidate or not pc:
-                return {"error": "Candidate or ProcessCandidate not found"}
+            if not candidate or not pc or not cv_version:
+                return {"error": "Candidate, ProcessCandidate or CV version not found"}
 
             # Marcar en proceso
             pc.status = CandidateStatus.CV_PROCESSING.value
@@ -262,14 +267,14 @@ def parse_cv(
             db.commit()
 
             # Descargar el archivo de R2
-            file_bytes = download_file_sync(candidate.cv_file_url)
+            file_bytes = download_file_sync(cv_version.original_file_url)
 
             # Preparar bloques de contenido según el tipo de archivo
-            content_blocks = _prepare_content(file_bytes, candidate.cv_file_url)
+            content_blocks = _prepare_content(file_bytes, cv_version.original_file_url)
 
             if not content_blocks:
                 raise ValueError(
-                    f"No se pudo extraer contenido del archivo: {candidate.cv_file_url}"
+                    f"No se pudo extraer contenido del archivo: {cv_version.original_file_url}"
                 )
 
             # Llamar a OpenAI
@@ -294,22 +299,29 @@ def parse_cv(
                 response_id,
             ) = _call_openai(content_blocks, openai_client, prompt, model)
 
-            # Deduplicación por correo. Desde este punto, `candidate` puede ser
-            # el registro existente al que se reasignó el ProcessCandidate; todas
-            # las escrituras posteriores deben usar ese ID efectivo, no el ID
-            # temporal recibido por la tarea.
+            # Deduplicación por correo. La identidad global puede cambiar, pero
+            # el CV recién extraído conserva su propia versión y objeto en R2.
+            # Nunca se sobrescribe el perfil de la identidad existente.
+            merged_into_existing_candidate = False
             ext_email = extracted.get("email")
             if ext_email and "@placeholder" in candidate.email:
                 existing = db.query(Candidate).filter(Candidate.email == ext_email).first()
                 if existing:
-                    # Apuntar al existente y tratar de borrar el temporal
+                    temporary_candidate_id = candidate.id
                     pc.candidate_id = existing.id
+                    cv_version.candidate_id = existing.id
                     db.flush()
+                    # El upload original ya puede haber dejado un costo contra el
+                    # candidato temporal. Conservamos su atribución al consolidar.
+                    db.query(CostLog).filter(CostLog.candidate_id == temporary_candidate_id).update(
+                        {CostLog.candidate_id: existing.id}, synchronize_session=False
+                    )
                     try:
                         db.delete(candidate)
                     except Exception:
                         pass
                     candidate = existing
+                    merged_into_existing_candidate = True
                 else:
                     candidate.email = ext_email
 
@@ -346,15 +358,15 @@ def parse_cv(
                 )
                 cost_db.commit()
 
-            # Actualizar candidato con datos extraídos
-            candidate.extracted_profile = extracted
-            candidate.normalized_cv = extracted
+            # Perfil y artefactos pertenecen a la versión del CV, no a Candidate.
+            cv_version.extracted_profile = extracted
+            cv_version.normalized_cv = extracted
 
             # Generar Embedding para búsqueda semántica
             try:
                 profile_text = json.dumps(extracted, ensure_ascii=False)
                 embedding, embedding_tokens = _get_embedding(profile_text, openai_client)
-                candidate.cv_embedding = embedding
+                cv_version.cv_embedding = embedding
                 embedding_cost = calculate_openai_cost(
                     "text-embedding-3-small", embedding_tokens
                 )
@@ -392,28 +404,30 @@ def parse_cv(
                     exc,
                 )
 
-            # Actualizar campos básicos si OpenAI los devolvió
-            full_name: str = extracted.get("full_name", "")
-            if full_name and " " in full_name:
-                parts = full_name.split(" ", 1)
-                candidate.name = parts[0][:100]
-                candidate.last_name = parts[1][:100]
-            elif full_name:
-                candidate.name = full_name[:100]
+            # La identidad se completa solo para un candidato nuevo. Si el correo
+            # consolidó con una identidad existente, B no reemplaza los datos de A.
+            if not merged_into_existing_candidate:
+                full_name: str = extracted.get("full_name", "")
+                if full_name and " " in full_name:
+                    parts = full_name.split(" ", 1)
+                    candidate.name = parts[0][:100]
+                    candidate.last_name = parts[1][:100]
+                elif full_name:
+                    candidate.name = full_name[:100]
 
-            if extracted.get("phone"):
-                candidate.phone = extracted["phone"][:20]
+                if extracted.get("phone"):
+                    candidate.phone = extracted["phone"][:20]
 
             # Generar PDF normalizado en estilo BBLABS y subirlo a R2
             normalized_pdf_bytes = render_normalized_cv(extracted)
-            original_key = candidate.cv_file_url
+            original_key = cv_version.original_file_url
             # Genera siempre una key _normalized.pdf independientemente de la extensión original
             if "." in original_key.rsplit("/", 1)[-1]:
                 normalized_key = original_key.rsplit(".", 1)[0] + "_normalized.pdf"
             else:
                 normalized_key = original_key + "_normalized.pdf"
             upload_file_sync(normalized_key, normalized_pdf_bytes, "application/pdf")
-            candidate.normalized_cv_url = normalized_key
+            cv_version.normalized_file_url = normalized_key
 
             storage_cost = calculate_r2_cost(
                 bytes_stored=len(normalized_pdf_bytes), class_a_operations=1, class_b_operations=1
