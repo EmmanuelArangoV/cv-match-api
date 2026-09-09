@@ -3,7 +3,7 @@ import pytest
 from src.application.profiling.voice_config_resolver import resolve_voice_config
 from src.domain.shared.exceptions import BusinessRuleException
 from src.infrastructure.ai.prompts import VOICE_CALL_AGENT_BASE_PROMPT
-from src.infrastructure.db.models import HiringProcess, QuestionSet
+from src.infrastructure.db.models import HiringProcess, ProfilingQuestion, QuestionSet, QuestionType
 
 
 def _question_set(**overrides) -> QuestionSet:
@@ -148,3 +148,35 @@ def test_process_prompt_requests_brief_feedback_after_each_answer():
     assert "Después de cada respuesta sustantiva" in config.system_prompt
     assert "una sola frase" in config.system_prompt
     assert "sin calificarlo, prometer resultados" in config.system_prompt
+
+
+def test_question_block_groups_guided_and_exploratory_questions_without_type_labels():
+    question_set = _question_set(
+        questions=[
+            ProfilingQuestion(
+                order_index=0,
+                text="¿Tienes disponibilidad inmediata?",
+                type=QuestionType.YES_NO.value,
+            ),
+            ProfilingQuestion(
+                order_index=1,
+                text="Cuéntame si tienes algún compromiso que pueda afectar tu vinculación.",
+                type=QuestionType.OPEN.value,
+            ),
+        ]
+    )
+
+    config = resolve_voice_config(
+        question_set,
+        _process(),
+        process_prompt="prompt",
+        process_first_message="Hola",
+    )
+
+    assert "Información práctica y disponibilidad" in config.system_prompt
+    assert "Experiencia o situación actual" in config.system_prompt
+    assert "Puedes responder con la opción o el dato concreto" in config.system_prompt
+    assert "cuéntame con base en tu experiencia o situación actual" in config.system_prompt
+    assert "[" not in config.system_prompt
+    assert "pregunta abierta" not in config.system_prompt
+    assert "pregunta cerrada" not in config.system_prompt

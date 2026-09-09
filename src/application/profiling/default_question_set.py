@@ -46,58 +46,47 @@ DEFAULT_FIRST_CONTACT_QUESTIONS: tuple[DefaultQuestion, ...] = (
     DefaultQuestion(
         order_index=0,
         text=(
-            "Antes de continuar, ¿autorizas el tratamiento de tus datos personales "
-            "durante esta llamada para fines del proceso de selección?"
-        ),
-        type=QuestionType.YES_NO,
-        expected_answer="Autorización expresa de sí o no.",
-        is_critical=True,
-        positive_keywords=("sí", "autorizo", "acepto"),
-        risk_keywords=("no", "no autorizo", "no acepto"),
-        eval_criteria="Registrar una autorización expresa o una negativa para revisión humana.",
-    ),
-    DefaultQuestion(
-        order_index=1,
-        text=(
-            "¿Qué modalidades de trabajo tienes disponibles: remoto, híbrido o presencial?"
+            "¿Qué modalidad de trabajo se ajusta mejor a tu disponibilidad actual: remoto, "
+            "híbrido o presencial?"
         ),
         type=QuestionType.MULTIPLE_CHOICE,
         expected_answer="Remoto, híbrido, presencial o una combinación de estas modalidades.",
     ),
     DefaultQuestion(
-        order_index=2,
-        text="¿Cuál es tu nivel de inglés: básico, intermedio o avanzado?",
+        order_index=1,
+        text="¿Cómo describirías tu nivel actual de inglés: básico, intermedio o avanzado?",
         type=QuestionType.MULTIPLE_CHOICE,
         expected_answer="Básico, intermedio o avanzado.",
     ),
     DefaultQuestion(
+        order_index=2,
+        text=(
+            "¿Cuál es tu expectativa salarial para esta oportunidad? Indícame el valor y la "
+            "moneda que esperas."
+        ),
+        type=QuestionType.CLOSED,
+        expected_answer="Valor y moneda de la expectativa salarial.",
+    ),
+    DefaultQuestion(
         order_index=3,
         text=(
-            "¿Cuál es tu expectativa salarial en COP o USD para una vinculación "
-            "indefinida, directa o contractor?"
+            "¿Qué disponibilidad tienes para vincularte a un nuevo equipo: inmediata, dentro "
+            "de una a dos semanas o después de ese periodo?"
         ),
-        type=QuestionType.OPEN,
-        expected_answer="Valor, moneda y modalidad de vinculación esperada.",
+        type=QuestionType.MULTIPLE_CHOICE,
+        expected_answer="Inmediata, dentro de una a dos semanas o después de ese periodo.",
     ),
     DefaultQuestion(
         order_index=4,
         text=(
-            "Gracias por tus respuestas. Pronto nuestro Especialista de Adquisición de "
-            "Talento se contactará contigo. Una última cosa: ¿cuál es tu disponibilidad "
-            "para vincularte a un nuevo equipo: inmediata, dentro de una a dos semanas "
-            "o en más de tres semanas?"
+            "Para entender tu disponibilidad de forma realista, ¿hay algún compromiso personal, "
+            "familiar, académico u otro que pueda afectar tu vinculación durante los próximos "
+            "tres meses?"
         ),
-        type=QuestionType.MULTIPLE_CHOICE,
-        expected_answer="Inmediata, dentro de una a dos semanas o en más de tres semanas.",
-    ),
-    DefaultQuestion(
-        order_index=5,
-        text=(
-            "¿Tienes algún compromiso personal, familiar o académico que pueda afectar "
-            "tu proceso de vinculación durante los próximos tres meses?"
+        type=QuestionType.OPEN,
+        expected_answer=(
+            "Explicación breve de cualquier compromiso y de su posible impacto, si aplica."
         ),
-        type=QuestionType.YES_NO,
-        expected_answer="Sí o no, con una explicación breve si aplica.",
     ),
 )
 

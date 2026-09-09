@@ -37,32 +37,61 @@ def _pick[T](override: T | None, default: T | None) -> T | None:
     return override if override is not None else default
 
 
-_QUESTION_TYPE_HINTS: dict[QuestionType, str] = {
-    QuestionType.OPEN: "pregunta abierta",
-    QuestionType.CLOSED: "pregunta cerrada",
-    QuestionType.MULTIPLE_CHOICE: "pregunta de opción múltiple",
-    QuestionType.YES_NO: "pregunta de sí o no",
-    QuestionType.NUMERIC: "pregunta numérica",
+_GUIDED_ANSWER_TYPES = {
+    QuestionType.CLOSED,
+    QuestionType.MULTIPLE_CHOICE,
+    QuestionType.YES_NO,
+    QuestionType.NUMERIC,
 }
 
 
 def _build_questions_block(questions: list[ProfilingQuestion]) -> str:
-    """
-    Lista las preguntas del set con su tipo (OPEN/CLOSED/YES_NO/...) e instruye al agente
-    a anunciar el tipo en lenguaje natural antes de formular cada una — p. ej. "la siguiente
-    pregunta es de sí o no: ¿tienes experiencia con metodologías ágiles?".
-    """
+    """Agrupa el cuestionario en bloques conversacionales, sin exponer tipos técnicos."""
     ordered = sorted(questions, key=lambda q: q.order_index)
-    lines = [
-        f"{i}. [{_QUESTION_TYPE_HINTS.get(QuestionType(q.type), 'pregunta abierta')}] {q.text}"
-        for i, q in enumerate(ordered, start=1)
+    guided_questions: list[ProfilingQuestion] = []
+    exploratory_questions: list[ProfilingQuestion] = []
+    for question in ordered:
+        try:
+            question_type = QuestionType(question.type)
+        except ValueError:
+            question_type = QuestionType.OPEN
+        if question_type in _GUIDED_ANSWER_TYPES:
+            guided_questions.append(question)
+        else:
+            exploratory_questions.append(question)
+
+    sections = [
+        "Cuestionario de profiling. Mantén una conversación fluida: formula una pregunta a la "
+        "vez, escucha la respuesta completa y no leas etiquetas técnicas ni expliques la "
+        "mecánica antes de cada pregunta.",
     ]
-    return (
-        "Preguntas del cuestionario de profiling, en este orden. Antes de formular cada "
-        "pregunta, anuncia brevemente en lenguaje natural qué tipo de pregunta es (por "
-        'ejemplo: "la siguiente pregunta es de sí o no", "esta es una pregunta abierta", '
-        '"esta pregunta tiene varias opciones para elegir") y luego hazla:\n' + "\n".join(lines)
-    )
+    if guided_questions:
+        sections.extend(
+            [
+                "Información práctica y disponibilidad:\n"
+                "Introduce este bloque una sola vez, con naturalidad: \"Ahora quiero conocer "
+                "algunos aspectos prácticos de tu disponibilidad. Puedes responder con la opción "
+                "o el dato concreto que mejor refleje tu situación; por ejemplo, sí o no cuando "
+                "aplique.\"",
+                *(
+                    f"{index}. {question.text}"
+                    for index, question in enumerate(guided_questions, start=1)
+                ),
+            ]
+        )
+    if exploratory_questions:
+        sections.extend(
+            [
+                "Experiencia o situación actual:\n"
+                "Introduce este bloque una sola vez, con naturalidad: \"Para estas preguntas, "
+                "cuéntame con base en tu experiencia o situación actual.\"",
+                *(
+                    f"{index}. {question.text}"
+                    for index, question in enumerate(exploratory_questions, start=1)
+                ),
+            ]
+        )
+    return "\n\n".join(sections)
 
 
 def _build_consent_note(whatsapp_consent_status: str | None) -> str:
