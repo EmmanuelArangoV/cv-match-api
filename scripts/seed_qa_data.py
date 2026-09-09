@@ -16,6 +16,7 @@ QUESTION_ID = uuid.UUID("00000000-0000-4000-8000-000000000003")
 PROCESS_ID = uuid.UUID("00000000-0000-4000-8000-000000000004")
 CANDIDATE_ID = uuid.UUID("00000000-0000-4000-8000-000000000005")
 PROCESS_CANDIDATE_ID = uuid.UUID("00000000-0000-4000-8000-000000000006")
+CV_VERSION_ID = uuid.UUID("00000000-0000-4000-8000-000000000007")
 
 
 async def main() -> None:
@@ -92,19 +93,33 @@ async def main() -> None:
         await connection.execute(
             text(
                 """
+                INSERT INTO candidate_cv_versions
+                  (id, candidate_id, original_file_url, extracted_profile)
+                SELECT :id, id, cv_file_url, extracted_profile
+                FROM candidates
+                WHERE id = :candidate_id
+                ON CONFLICT (id) DO NOTHING
+                """
+            ),
+            {"id": CV_VERSION_ID, "candidate_id": CANDIDATE_ID},
+        )
+        await connection.execute(
+            text(
+                """
                 INSERT INTO process_candidates
                   (id, process_id, candidate_id, status, match_percentage, match_category,
-                   whatsapp_consent_status, availability_preference)
+                   whatsapp_consent_status, availability_preference, cv_version_id)
                 VALUES
                   (:id, :process_id, :candidate_id, 'MATCHED', 91, 'HIGH', 'ACCEPTED',
-                   '{"timezone": "America/Bogota", "days": ["monday"]}'::jsonb)
-                ON CONFLICT (id) DO NOTHING
+                   '{"timezone": "America/Bogota", "days": ["monday"]}'::jsonb, :cv_version_id)
+                ON CONFLICT (id) DO UPDATE SET cv_version_id = EXCLUDED.cv_version_id
                 """
             ),
             {
                 "id": PROCESS_CANDIDATE_ID,
                 "process_id": PROCESS_ID,
                 "candidate_id": CANDIDATE_ID,
+                "cv_version_id": CV_VERSION_ID,
             },
         )
 
