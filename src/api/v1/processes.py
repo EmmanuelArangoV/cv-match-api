@@ -220,6 +220,15 @@ async def create_process(
             WhatsAppTemplate.status == WhatsAppTemplateStatus.APPROVED.value,
         )
     )
+    from src.api.v1.question_sets import _clone_question_set
+    from src.application.profiling.default_question_set import (
+        get_or_create_default_first_contact_question_set,
+    )
+
+    default_question_set = await get_or_create_default_first_contact_question_set(
+        db, created_by=current_user.id
+    )
+    process_question_set = await _clone_question_set(default_question_set, db)
     process = HiringProcess(
         name=body.name,
         job_title=body.job_title,
@@ -228,6 +237,7 @@ async def create_process(
         budget_max_usd=body.budget_max_usd,
         match_weights_override=body.match_weights_override,
         recruiter_id=recruiter_id,
+        question_set_id=process_question_set.id,
         whatsapp_template_id=(
             default_whatsapp_template.id if default_whatsapp_template else None
         ),
@@ -269,6 +279,9 @@ async def create_process(
         "seniority": process.seniority,
         "status": process.status,
         "budget_max_usd": float(process.budget_max_usd),
+        "question_set_id": str(process.question_set_id),
+        "default_question_set_template_id": str(default_question_set.id),
+        "question_set_name": default_question_set.name,
     }
 
 
