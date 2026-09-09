@@ -80,6 +80,22 @@ def test_send_payload_rejects_missing_runtime_value() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("phone", "expected"),
+    [
+        ("+57 314 757 3205", "573147573205"),
+        ("57-314-757-3205", "573147573205"),
+    ],
+)
+def test_cloud_api_recipient_phone_uses_digits_only(phone: str, expected: str) -> None:
+    assert WhatsAppClient.normalize_recipient_phone(phone) == expected
+
+
+def test_cloud_api_recipient_phone_rejects_values_without_digits() -> None:
+    with pytest.raises(BusinessRuleException, match="no contiene dígitos"):
+        WhatsAppClient.normalize_recipient_phone("sin-teléfono")
+
+
 def test_template_is_selectable_only_when_approved_enabled_and_mapped() -> None:
     template = SimpleNamespace(
         id="template-id",

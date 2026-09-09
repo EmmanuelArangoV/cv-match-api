@@ -110,6 +110,14 @@ class WhatsAppClient:
         return rows
 
     @staticmethod
+    def normalize_recipient_phone(phone: str) -> str:
+        """Devuelve el destinatario en el formato numérico de Cloud API."""
+        digits_only = re.sub(r"\D", "", phone)
+        if not digits_only:
+            raise BusinessRuleException("El teléfono de WhatsApp no contiene dígitos válidos.")
+        return digits_only
+
+    @staticmethod
     def build_template_components(
         variable_bindings: dict[str, Any], context: dict[str, str]
     ) -> list[dict[str, Any]]:
@@ -162,12 +170,9 @@ class WhatsAppClient:
             if components:
                 template["components"] = components
 
-        digits_only = re.sub(r"\D", "", to_phone)
-        formatted_phone = f"+{digits_only}" if digits_only else to_phone
-
         payload = {
             "messaging_product": "whatsapp",
-            "to": formatted_phone,
+            "to": self.normalize_recipient_phone(to_phone),
             "type": "template",
             "template": template,
         }
