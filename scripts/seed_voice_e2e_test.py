@@ -43,15 +43,26 @@ CANDIDATE_EMAIL = "angelo.gaviria.e2e@riwi.io"
 RECRUITER_EMAIL = "recruiter-test@riwi.io"
 
 SYSTEM_PROMPT = """\
-Eres un agente de voz de Riwi Corp llamando a un candidato para una entrevista breve de
-profiling despues de un proceso de seleccion para un cargo de Desarrollador Backend.
-Preséntate, pide consentimiento explícito para continuar la llamada, y si acepta, haz
-las preguntas del cuestionario de forma natural y conversacional. Sé cálido, profesional
-y breve — la llamada no debe durar más de 5 minutos."""
+Eres Valentina, entrevistadora de Riwi. Realizas una conversación breve de profiling para el
+cargo de Líder Técnico de IA. Tu objetivo es entender experiencia real en liderazgo técnico,
+arquitectura de productos de IA y operación responsable de modelos; no es un examen ni una venta.
+
+Estilo de conversación:
+- Saluda, confirma que hablas con la persona correcta y pide permiso explícito para continuar.
+- Haz una pregunta a la vez. Espera la respuesta completa antes de continuar.
+- Demuestra escucha con una frase corta y concreta que retome algo que la persona dijo; por
+  ejemplo: "Entiendo, priorizaste trazabilidad porque el equipo debía auditar las respuestas.".
+- Si una respuesta es ambigua, pide una precisión útil y breve: contexto, decisión, métrica o
+  resultado. No repitas la respuesta, no inventes detalles y no uses elogios vacíos.
+- Mantén un tono cercano, profesional y curioso. Evita jerga innecesaria y juicios sobre la
+  persona. La llamada debe durar como máximo cinco minutos.
+
+Al cerrar, agradece el tiempo, resume en una sola frase los dos o tres temas que entendiste y
+explica que el equipo revisará el proceso. No prometas resultados ni fechas."""
 
 FIRST_MESSAGE = (
-    "Hola, ¿hablo con Angelo? Te llamo de parte de Riwi Corp para una breve entrevista "
-    "de seguimiento sobre tu proceso de selección. ¿Tienes un par de minutos?"
+    "Hola, ¿hablo con Angelo? Soy Valentina, de Riwi. Estamos conociendo perfiles para el cargo "
+    "de Líder Técnico de IA. ¿Tienes unos cinco minutos para una conversación breve?"
 )
 
 
@@ -75,11 +86,10 @@ async def main() -> None:
 
         # Question set con la configuración técnica de voz reutilizable.
         question_set = QuestionSet(
-            name="Profiling E2E Test - Voz",
-            description="Set de prueba para validar la integracion real Twilio + ElevenLabs",
+            name="Profiling E2E - Líder Técnico de IA",
+            description="Entrevista breve para validar liderazgo técnico y delivery de productos de IA.",
             status=QuestionSetStatus.ACTIVE.value,
             created_by=recruiter.id,
-            default_first_message=FIRST_MESSAGE,
             default_language="es",
         )
         db.add(question_set)
@@ -91,8 +101,9 @@ async def main() -> None:
                     question_set_id=question_set.id,
                     order_index=0,
                     text=(
-                        "¿Cuál dirías que es tu mayor fortaleza técnica como "
-                        "desarrollador backend?"
+                        "Cuéntame de un producto de IA que hayas llevado a producción: "
+                        "¿qué problema resolvía, qué decisión técnica lideraste y cómo mediste "
+                        "que estaba aportando valor?"
                     ),
                     type=QuestionType.OPEN.value,
                     weight=10,
@@ -101,11 +112,37 @@ async def main() -> None:
                 ProfilingQuestion(
                     question_set_id=question_set.id,
                     order_index=1,
-                    text="¿Tienes disponibilidad para trabajar tiempo completo de forma remota?",
-                    type=QuestionType.YES_NO.value,
-                    expected_answer="sí",
-                    weight=15,
+                    text=(
+                        "Si un asistente con RAG empieza a dar respuestas plausibles pero "
+                        "difíciles de verificar, ¿qué señales revisarías primero y qué cambio "
+                        "priorizarías antes de escalarlo?"
+                    ),
+                    type=QuestionType.OPEN.value,
+                    weight=20,
                     is_critical=True,
+                ),
+                ProfilingQuestion(
+                    question_set_id=question_set.id,
+                    order_index=2,
+                    text=(
+                        "Háblame de una decisión donde equilibraste calidad del modelo, latencia, "
+                        "costo y privacidad. ¿Qué alternativa descartaste y por qué?"
+                    ),
+                    type=QuestionType.OPEN.value,
+                    weight=20,
+                    is_critical=True,
+                ),
+                ProfilingQuestion(
+                    question_set_id=question_set.id,
+                    order_index=3,
+                    text=(
+                        "Para un equipo con datos, backend y producto, ¿cómo organizarías las "
+                        "primeras semanas para entregar una mejora de IA sin perder trazabilidad "
+                        "ni calidad?"
+                    ),
+                    type=QuestionType.OPEN.value,
+                    weight=15,
+                    is_critical=False,
                 ),
             ]
         )
@@ -113,10 +150,10 @@ async def main() -> None:
 
         # Hiring process con el question set asociado
         process = HiringProcess(
-            name="Prueba E2E Llamadas de Voz",
-            job_title="Desarrollador Backend",
-            area="Tecnologia",
-            seniority="Senior",
+            name="Prueba E2E - Liderazgo Técnico IA",
+            job_title="Líder Técnico de IA",
+            area="Inteligencia Artificial",
+            seniority="Lead",
             status=ProcessStatus.PROFILING_CONFIGURED.value,
             recruiter_id=recruiter.id,
             question_set_id=question_set.id,
@@ -131,22 +168,25 @@ async def main() -> None:
                 task_type="VOICE_CALL_AGENT",
                 version_name="qa-e2e",
                 system_prompt_text=SYSTEM_PROMPT,
+                first_message_text=FIRST_MESSAGE,
                 is_active=True,
                 created_by=recruiter.id,
             )
         )
         print(f"HiringProcess: {process.name} ({process.id})")
 
-        # Candidato
-        candidate = Candidate(
-            name=CANDIDATE_NAME,
-            last_name=CANDIDATE_LAST_NAME,
-            email=CANDIDATE_EMAIL,
-            phone=CANDIDATE_PHONE,
-            cv_file_url="",
-        )
-        db.add(candidate)
-        await db.flush()
+        # Candidato E2E reutilizable para que el seed sea idempotente.
+        candidate = await db.scalar(select(Candidate).where(Candidate.email == CANDIDATE_EMAIL))
+        if not candidate:
+            candidate = Candidate(
+                name=CANDIDATE_NAME,
+                last_name=CANDIDATE_LAST_NAME,
+                email=CANDIDATE_EMAIL,
+                phone=CANDIDATE_PHONE,
+                cv_file_url="",
+            )
+            db.add(candidate)
+            await db.flush()
         print(f"Candidate: {candidate.name} {candidate.last_name} ({candidate.phone})")
 
         # ProcessCandidate ya en PROFILING_QUEUED, listo para disparar la llamada
