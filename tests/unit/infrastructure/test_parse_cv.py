@@ -3,6 +3,8 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.infrastructure.db.models import (
     Candidate,
     CandidateCVVersion,
@@ -33,6 +35,93 @@ def test_normalized_cv_filename_uses_language_candidate_and_role() -> None:
         == "EN_Maria-Jose-Gomez_Senior-Data-Analyst.pdf"
     )
     assert module._normalized_cv_filename("es", "", "") == "ES_Candidato_Rol.pdf"
+
+
+@pytest.mark.parametrize(
+    ("content", "finish_reason", "refusal", "retryable"),
+    [("", "stop", None, True), ("{", "stop", None, True),
+     ("{}", "length", None, True), (None, "stop", "rechazo", False)],
+)
+def test_invalid_provider_response_is_classified(content, finish_reason, refusal, retryable):
+    module = importlib.import_module("src.infrastructure.workers.tasks.parse_cv")
+    response = SimpleNamespace(
+        id="response-test", usage=None,
+        choices=[SimpleNamespace(finish_reason=finish_reason,
+                                 message=SimpleNamespace(content=content, refusal=refusal))],
+    )
+    with pytest.raises(module.CVResponseError) as caught:
+        module._parse_response(response, "gpt-5.6-luna", "CV_EXTRACTION")
+    assert caught.value.retryable is retryable
+    assert caught.value.response is response
+
+
+def test_charged_response_is_recorded_before_json_validation():
+    module = importlib.import_module("src.infrastructure.workers.tasks.parse_cv")
+    response = SimpleNamespace(
+        id="response-test", usage=None,
+        choices=[SimpleNamespace(finish_reason="length",
+                                 message=SimpleNamespace(content="{", refusal=None))],
+    )
+    client = MagicMock()
+    client.chat.completions.create.return_value = response
+    record = MagicMock()
+    with pytest.raises(module.CVResponseError):
+        module._call_openai([], client, "prompt", "gpt-5.6-luna", on_response=record)
+    record.assert_called_once_with(response)
+
+
+def test_extraction_forwards_the_retry_token_limit():
+    module = importlib.import_module("src.infrastructure.workers.tasks.parse_cv")
+    client = MagicMock()
+    client.chat.completions.create.return_value = SimpleNamespace(
+        id="response-test", usage=None,
+        choices=[SimpleNamespace(finish_reason="stop",
+                                 message=SimpleNamespace(content='{"name":"test"}', refusal=None))],
+    )
+    module._call_openai([], client, "prompt", "gpt-5.6-luna", max_tokens=8192)
+    assert client.chat.completions.create.call_args.kwargs["max_completion_tokens"] == 8192
+
+
+def test_stale_task_cannot_process_a_candidate():
+    module = importlib.import_module("src.infrastructure.workers.tasks.parse_cv")
+    candidate_id, process_id, pc_id, cv_id = (uuid.uuid4() for _ in range(4))
+    candidate = Candidate(id=candidate_id, name="Ejemplo", last_name="Prueba",
+                          email="example@example.com", cv_file_url="cv.pdf")
+    cv = CandidateCVVersion(id=cv_id, candidate_id=candidate_id, original_file_url="cv.pdf")
+    pc = ProcessCandidate(id=pc_id, process_id=process_id, candidate_id=candidate_id,
+                          cv_version_id=cv_id, status=CandidateStatus.CV_PROCESSING.value,
+                          cv_task_id="new-task")
+    session = _Session(candidate, pc, cv)
+    task = SimpleNamespace(request=SimpleNamespace(id="old-task", retries=0), max_retries=2)
+    with (patch.object(module, "_SyncSession", return_value=session),
+          patch.object(module, "download_file_sync") as download):
+        result = module._parse_cv(task, str(candidate_id), str(pc_id), str(process_id))
+    assert "skipped" in result
+    assert pc.status == CandidateStatus.CV_PROCESSING.value
+    download.assert_not_called()
+
+
+@pytest.mark.parametrize("retries", [0, 2])
+def test_failure_keeps_claim_until_last_attempt(retries):
+    module = importlib.import_module("src.infrastructure.workers.tasks.parse_cv")
+    candidate_id, process_id, pc_id, cv_id = (uuid.uuid4() for _ in range(4))
+    candidate = Candidate(id=candidate_id, name="Ejemplo", last_name="Prueba",
+                          email="example@example.com", cv_file_url="cv.pdf")
+    cv = CandidateCVVersion(id=cv_id, candidate_id=candidate_id, original_file_url="cv.pdf")
+    pc = ProcessCandidate(id=pc_id, process_id=process_id, candidate_id=candidate_id,
+                          cv_version_id=cv_id, status=CandidateStatus.CV_PROCESSING.value,
+                          cv_task_id="task")
+    session = _Session(candidate, pc, cv)
+    task = MagicMock(request=SimpleNamespace(id="task", retries=retries), max_retries=2)
+    task.retry.side_effect = RuntimeError("scheduled")
+    with (patch.object(module, "_SyncSession", return_value=session),
+          patch.object(module, "download_file_sync", side_effect=ValueError("falló")),
+          patch.object(module, "sync_process_status_sync")):
+        with pytest.raises(RuntimeError if retries == 0 else ValueError):
+            module._parse_cv(task, str(candidate_id), str(pc_id), str(process_id))
+    assert pc.status == (CandidateStatus.CV_PROCESSING.value if retries == 0
+                         else CandidateStatus.CV_ERROR.value)
+    assert pc.cv_task_id == ("task" if retries == 0 else None)
 
 
 class _Query:
@@ -93,6 +182,9 @@ class _Session:
     def commit(self) -> None:
         self.events.append("commit")
 
+    def refresh(self, *args: object, **kwargs: object) -> None:
+        return None
+
     def rollback(self) -> None:
         return None
 
@@ -130,6 +222,7 @@ def test_parse_cv_registers_cost_against_deduplicated_candidate() -> None:
         candidate_id=original_id,
         cv_version_id=cv_version.id,
         status=CandidateStatus.CV_PROCESSING.value,
+        cv_task_id="task-test",
     )
     session = _Session(original, process_candidate, cv_version)
     session.existing = existing
@@ -191,7 +284,9 @@ def test_parse_cv_registers_cost_against_deduplicated_candidate() -> None:
             return_value="gpt-4o",
         ),
     ):
-        result = module.parse_cv.run(
+        task = SimpleNamespace(request=SimpleNamespace(id="task-test", retries=0), max_retries=2)
+        result = module._parse_cv(
+            task,
             str(original_id),
             str(process_candidate_id),
             str(process_id),

@@ -51,7 +51,7 @@ async def test_analyze_enqueues_loaded_and_cv_error_and_claims_them():
     task = SimpleNamespace(id="task-1")
 
     with patch("src.application.cv.use_cases.parse_cv") as parse_cv:
-        parse_cv.delay.return_value = task
+        parse_cv.apply_async.return_value = task
         results = await AnalyzeCVsUseCase(db).execute(process_id)
         second_results = await AnalyzeCVsUseCase(db).execute(process_id)
 
@@ -59,7 +59,10 @@ async def test_analyze_enqueues_loaded_and_cv_error_and_claims_them():
     assert second_results == []
     assert {result.task_id for result in results} == {"task-1"}
     assert {pc.status for pc in (loaded, errored)} == {CandidateStatus.CV_PROCESSING.value}
-    assert parse_cv.delay.call_count == 2
+    assert parse_cv.apply_async.call_count == 2
+    assert {call.kwargs["task_id"] for call in parse_cv.apply_async.call_args_list} == {
+        loaded.cv_task_id, errored.cv_task_id
+    }
     assert db.commit.await_count == 2
 
 
@@ -76,7 +79,7 @@ async def test_analyze_does_not_requeue_processing_or_processed_candidates():
         results = await AnalyzeCVsUseCase(db).execute(process_id)
 
     assert results == []
-    parse_cv.delay.assert_not_called()
+    parse_cv.apply_async.assert_not_called()
     db.commit.assert_awaited_once()
 
 
@@ -88,12 +91,13 @@ async def test_analyze_restores_status_when_task_publish_fails():
     db.get = AsyncMock(return_value=errored)
 
     with patch("src.application.cv.use_cases.parse_cv") as parse_cv:
-        parse_cv.delay.side_effect = RuntimeError("broker unavailable")
+        parse_cv.apply_async.side_effect = RuntimeError("broker unavailable")
         results = await AnalyzeCVsUseCase(db).execute(errored.process_id)
 
     assert results[0].task_id is None
     assert results[0].error == "broker unavailable"
     assert errored.status == CandidateStatus.CV_ERROR.value
+    assert errored.cv_task_id is None
     db.rollback.assert_awaited_once()
     assert db.commit.await_count == 2
 

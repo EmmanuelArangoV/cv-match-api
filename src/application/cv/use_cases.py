@@ -276,6 +276,7 @@ class AnalyzeCVResult:
     process_candidate_id: uuid.UUID
     candidate_id: uuid.UUID
     previous_status: str
+    claim_id: str = ""
     task_id: str | None = None
     error: str | None = None
 
@@ -292,7 +293,7 @@ class AnalyzeCVsUseCase:
         self._db = db
 
     async def execute(self, process_id: uuid.UUID) -> list[AnalyzeCVResult]:
-        from sqlalchemy import select
+        from sqlalchemy import select, text
 
         from src.domain.candidate.state_machine import CandidateStateMachine
 
@@ -313,11 +314,13 @@ class AnalyzeCVsUseCase:
                 CandidateStatus(previous_status), CandidateStatus.CV_PROCESSING
             )
             pc.status = CandidateStatus.CV_PROCESSING.value
+            pc.cv_task_id = str(uuid.uuid4())
             claimed.append(
                 AnalyzeCVResult(
                     process_candidate_id=pc.id,
                     candidate_id=pc.candidate_id,
                     previous_status=previous_status,
+                    claim_id=pc.cv_task_id,
                 )
             )
 
@@ -327,19 +330,29 @@ class AnalyzeCVsUseCase:
 
         for item in claimed:
             try:
-                task = parse_cv.delay(
-                    str(item.candidate_id),
-                    str(item.process_candidate_id),
-                    str(process_id),
+                task = parse_cv.apply_async(
+                    args=(str(item.candidate_id), str(item.process_candidate_id), str(process_id)),
+                    task_id=item.claim_id,
                 )
                 item.task_id = task.id
             except Exception as exc:
                 # La publicación falló después del commit: devolver el candidato
                 # a su estado anterior para permitir un nuevo intento manual.
                 await self._db.rollback()
-                failed_pc = await self._db.get(ProcessCandidate, item.process_candidate_id)
-                if failed_pc and failed_pc.status == CandidateStatus.CV_PROCESSING.value:
+                # A broker timeout can happen after publication. Wait for a worker
+                # already holding the task lock before deciding whether to release it.
+                await self._db.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                    {"key": f"cv-analysis:{item.process_candidate_id}"},
+                )
+                failed_pc = await self._db.get(
+                    ProcessCandidate, item.process_candidate_id,
+                    populate_existing=True, with_for_update=True,
+                )
+                if (failed_pc and failed_pc.status == CandidateStatus.CV_PROCESSING.value
+                        and failed_pc.cv_task_id == item.claim_id):
                     failed_pc.status = item.previous_status
+                    failed_pc.cv_task_id = None
                     await self._db.commit()
                 item.error = str(exc)
 

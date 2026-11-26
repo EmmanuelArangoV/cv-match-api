@@ -466,6 +466,7 @@ class ProcessCandidate(Base):
     status: Mapped[CandidateStatus] = mapped_column(
         String(50), nullable=False, default=CandidateStatus.LOADED
     )
+    cv_task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     # Match
     match_percentage: Mapped[float] = mapped_column(DECIMAL(5, 2), nullable=False, default=0.00)
