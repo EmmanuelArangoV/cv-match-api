@@ -7,10 +7,13 @@ from sqlalchemy import text
 from src.infrastructure.cache.redis_client import redis_client
 from src.infrastructure.db.database import engine
 
-pytestmark = pytest.mark.skipif(
-    os.getenv("RUN_INTEGRATION_TESTS") != "1",
-    reason="Requiere PostgreSQL con pgvector y Redis",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        os.getenv("RUN_INTEGRATION_TESTS") != "1",
+        reason="Requiere PostgreSQL con pgvector y Redis",
+    ),
+    pytest.mark.asyncio(loop_scope="module"),
+]
 
 
 async def test_migrations_pgvector_and_redis_are_ready():
@@ -33,6 +36,7 @@ async def test_synthetic_candidate_round_trip_rolls_back():
     user_id = uuid.uuid4()
     process_id = uuid.uuid4()
     candidate_id = uuid.uuid4()
+    cv_version_id = uuid.uuid4()
     process_candidate_id = uuid.uuid4()
 
     async with engine.connect() as connection:
@@ -41,8 +45,10 @@ async def test_synthetic_candidate_round_trip_rolls_back():
             await connection.execute(
                 text(
                     """
-                    INSERT INTO users (id, name, last_name, email, password_hash, role, status)
-                    VALUES (:id, 'Admin', 'QA', :email, 'not-a-real-hash', 'ADMIN', 'ACTIVE')
+                    INSERT INTO users
+                      (id, name, last_name, email, password_hash, role, status,
+                       password_change_required)
+                    VALUES (:id, 'Admin', 'QA', :email, 'not-a-real-hash', 'ADMIN', 'ACTIVE', false)
                     """
                 ),
                 {"id": user_id, "email": f"qa-{user_id}@example.test"},
@@ -71,14 +77,26 @@ async def test_synthetic_candidate_round_trip_rolls_back():
             await connection.execute(
                 text(
                     """
-                    INSERT INTO process_candidates (id, process_id, candidate_id, status)
-                    VALUES (:id, :process_id, :candidate_id, 'LOADED')
+                    INSERT INTO candidate_cv_versions (id, candidate_id, original_file_url)
+                    VALUES (:id, :candidate_id, 'r2://qa/cv.pdf')
+                    """
+                ),
+                {"id": cv_version_id, "candidate_id": candidate_id},
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO process_candidates
+                      (id, process_id, candidate_id, cv_version_id, status,
+                       match_percentage, whatsapp_consent_status)
+                    VALUES (:id, :process_id, :candidate_id, :cv_version_id, 'LOADED', 0, 'PENDING')
                     """
                 ),
                 {
                     "id": process_candidate_id,
                     "process_id": process_id,
                     "candidate_id": candidate_id,
+                    "cv_version_id": cv_version_id,
                 },
             )
             result = (

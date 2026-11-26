@@ -16,10 +16,12 @@ import re
 import unicodedata
 import uuid
 import zipfile
+from collections.abc import Callable
+from typing import Any
 
 import pymupdf as fitz  # PyMuPDF >= 1.24
-from openai import OpenAI
-from sqlalchemy import create_engine
+from openai import BadRequestError, OpenAI
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from src.application.hiring_process.progress import sync_process_status_sync
@@ -38,6 +40,40 @@ from src.infrastructure.workers.celery_app import celery_app
 _engine = create_engine(settings.database_url_sync)
 _SyncSession = sessionmaker(bind=_engine)
 logger = logging.getLogger(__name__)
+
+
+class CVResponseError(ValueError):
+    def __init__(self, reason: str, response: object, *, retryable: bool = True) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.response = response
+        self.retryable = retryable
+
+
+def _parse_response(response: object, model: str, stage: str) -> dict[str, Any]:
+    choices = getattr(response, "choices", None) or []
+    choice = choices[0] if choices else None
+    message = getattr(choice, "message", None)
+    finish_reason = getattr(choice, "finish_reason", None)
+    content = getattr(message, "content", None)
+    logger.info(
+        "CV response stage=%s model=%s response_id=%s finish_reason=%s usage=%s",
+        stage, model, getattr(response, "id", None), finish_reason,
+        extract_openai_usage(response),
+    )
+    if getattr(message, "refusal", None) or finish_reason == "content_filter":
+        raise CVResponseError("Respuesta rechazada por el proveedor", response, retryable=False)
+    if finish_reason == "length":
+        raise CVResponseError("Respuesta truncada", response)
+    if not content or not content.strip():
+        raise CVResponseError("Respuesta vacía", response)
+    try:
+        result = json.loads(content)
+    except (TypeError, ValueError) as exc:
+        raise CVResponseError("Respuesta JSON inválida", response) from exc
+    if not isinstance(result, dict) or not result:
+        raise CVResponseError("Respuesta JSON sin perfil", response)
+    return result
 
 # Extensiones reconocidas como imágenes directas
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".tiff", ".tif", ".bmp"}
@@ -166,7 +202,8 @@ def _get_embedding(text: str, client: OpenAI) -> tuple[list[float], int]:
 
 
 def _call_openai(
-    content_blocks: list[dict], client: OpenAI, prompt: str, model: str
+    content_blocks: list[dict], client: OpenAI, prompt: str, model: str, *, max_tokens: int = 4096,
+    on_response: Callable[[object], None] | None = None,
 ) -> tuple[dict, int, int, int, int, int, str]:
     content: list[dict] = [{"type": "text", "text": prompt}]
     content.extend(content_blocks)
@@ -175,10 +212,12 @@ def _call_openai(
         model=model,
         messages=[{"role": "user", "content": content}],
         response_format={"type": "json_object"},
-        **chat_completion_options(model, max_tokens=4096),
+        **chat_completion_options(model, max_tokens=max_tokens),
     )
 
-    result = json.loads(response.choices[0].message.content)
+    if on_response:
+        on_response(response)
+    result = _parse_response(response, model, "CV_EXTRACTION")
     tokens_in, tokens_out, cached_tokens, cache_write_tokens, reasoning_tokens = (
         extract_openai_usage(response)
     )
@@ -216,7 +255,8 @@ def _normalized_cv_filename(language: str, candidate_name: object, job_title: ob
 
 
 def _call_translation_openai(
-    profile: dict[str, object], client: OpenAI, prompt: str, model: str, target_language: str
+    profile: dict[str, object], client: OpenAI, prompt: str, model: str, target_language: str,
+    *, max_tokens: int = 4096, on_response: Callable[[object], None] | None = None,
 ) -> tuple[dict[str, object], int, int, int, int, int, str]:
     """Hace exactamente una llamada adicional para construir el segundo idioma."""
     target_name = "Spanish" if target_language == "es" else "English"
@@ -233,11 +273,11 @@ def _call_translation_openai(
             }
         ],
         response_format={"type": "json_object"},
-        **chat_completion_options(model, max_tokens=4096),
+        **chat_completion_options(model, max_tokens=max_tokens),
     )
-    translated = json.loads(response.choices[0].message.content)
-    if not isinstance(translated, dict):
-        raise ValueError("La traducción del CV no devolvió un objeto JSON.")
+    if on_response:
+        on_response(response)
+    translated = _parse_response(response, model, "CV_TRANSLATION")
     tokens_in, tokens_out, cached_tokens, cache_write_tokens, reasoning_tokens = (
         extract_openai_usage(response)
     )
@@ -284,18 +324,13 @@ los campos del esquema (experiencia, educación, skills, etc.), sigue basándote
 # ─── Tarea Celery ──────────────────────────────────────────────────────────────
 
 
-@celery_app.task(
-    bind=True,
-    max_retries=2,
-    default_retry_delay=60,
-    name="parse_cv",
-)
-def parse_cv(
-    self,
+def _parse_cv(
+    self: Any,
     candidate_id: str,
     process_candidate_id: str,
     process_id: str,
-) -> dict:
+) -> dict[str, Any]:
+    from src.domain.candidate.state_machine import CandidateStateMachine
     from src.infrastructure.db.models import (
         Candidate,
         CandidateCVVersion,
@@ -307,14 +342,16 @@ def parse_cv(
         ProcessCandidate,
     )
 
-    cand_uuid = uuid.UUID(candidate_id)
+    uuid.UUID(candidate_id)
     pc_uuid = uuid.UUID(process_candidate_id)
     proc_uuid = uuid.UUID(process_id)
+    stage = "CV_EXTRACTION"
+    model = DEFAULT_OPENAI_MODEL
 
     with _SyncSession() as db:
         try:
-            candidate: Candidate = db.get(Candidate, cand_uuid)
             pc: ProcessCandidate = db.get(ProcessCandidate, pc_uuid)
+            candidate: Candidate | None = db.get(Candidate, pc.candidate_id) if pc else None
             cv_version: CandidateCVVersion | None = (
                 db.get(CandidateCVVersion, pc.cv_version_id) if pc else None
             )
@@ -322,11 +359,11 @@ def parse_cv(
             if not candidate or not pc or not cv_version:
                 return {"error": "Candidate, ProcessCandidate or CV version not found"}
 
-            # Marcar en proceso
-            pc.status = CandidateStatus.CV_PROCESSING.value
-            db.commit()
-            sync_process_status_sync(db, proc_uuid)
-            db.commit()
+            db.refresh(pc, attribute_names=["status", "cv_task_id"], with_for_update=True)
+            if (pc.process_id != proc_uuid
+                    or pc.status != CandidateStatus.CV_PROCESSING.value
+                    or pc.cv_task_id != self.request.id):
+                return {"skipped": "CV analysis claim is no longer current"}
 
             # Descargar el archivo de R2
             file_bytes = download_file_sync(cv_version.original_file_url)
@@ -347,6 +384,34 @@ def parse_cv(
             prompt = get_effective_prompt_sync(db, proc_uuid, "CV_EXTRACTION").system_prompt_text
             prompt = _build_extraction_prompt(prompt, pc.analysis_context)
             model = get_active_ai_model_sync(db, "CV_EXTRACTION", "OPENAI", DEFAULT_OPENAI_MODEL)
+            process = db.get(HiringProcess, proc_uuid)
+
+            def record_response(response: object) -> None:
+                assert candidate is not None
+                usage = extract_openai_usage(response)
+                cost = calculate_openai_cost(model, *usage)
+                response_id = getattr(response, "id", None)
+                if not response_id:
+                    raise ValueError("La respuesta de OpenAI no tiene identificador")
+                with _SyncSession() as cost_db:
+                    record_cost_sync(
+                        cost_db,
+                        process_id=proc_uuid,
+                        candidate_id=candidate.id,
+                        user_id=process.recruiter_id if process else None,
+                        operation_type=stage,
+                        provider="OPENAI",
+                        model_used=model,
+                        tokens_input=usage[0],
+                        tokens_cached=usage[2],
+                        tokens_output=usage[1],
+                        estimated_cost=cost.amount_usd,
+                        cost_source=cost.source,
+                        external_reference=f"openai:{response_id}",
+                        cost_breakdown=cost.breakdown,
+                    )
+                    cost_db.commit()
+
             (
                 extracted,
                 tokens_in,
@@ -355,7 +420,11 @@ def parse_cv(
                 cache_write_tokens,
                 reasoning_tokens,
                 response_id,
-            ) = _call_openai(content_blocks, openai_client, prompt, model)
+            ) = _call_openai(
+                content_blocks, openai_client, prompt, model,
+                max_tokens=8192 if self.request.retries else 4096,
+                on_response=record_response,
+            )
 
             # Deduplicación por correo. La identidad global puede cambiar, pero
             # el CV recién extraído conserva su propia versión y objeto en R2.
@@ -397,6 +466,11 @@ def parse_cv(
             # la transacción independiente; así el costo facturado se conserva aunque
             # falle el render/subida posterior, sin esperar al statement_timeout.
             db.commit()
+            db.refresh(pc, attribute_names=["status", "cv_task_id"], with_for_update=True)
+            if (pc.status != CandidateStatus.CV_PROCESSING.value
+                    or pc.cv_task_id != self.request.id):
+                db.rollback()
+                return {"skipped": "CV analysis claim is no longer current"}
             with _SyncSession() as cost_db:
                 record_cost_sync(
                     cost_db,
@@ -426,6 +500,8 @@ def parse_cv(
                 db, proc_uuid, "CV_TRANSLATION"
             ).system_prompt_text
             translation_model = get_active_ai_model_sync(db, "CV_TRANSLATION", "OPENAI", model)
+            stage = "CV_TRANSLATION"
+            model = translation_model
             target_language = "en" if source_language == "es" else "es"
             (
                 translated_profile,
@@ -441,6 +517,8 @@ def parse_cv(
                 translation_prompt,
                 translation_model,
                 target_language,
+                max_tokens=8192 if self.request.retries else 4096,
+                on_response=record_response,
             )
             translation_cost = calculate_openai_cost(
                 translation_model,
@@ -594,7 +672,10 @@ def parse_cv(
                 cost_db.commit()
 
             # Actualizar estado del proceso-candidato
-            pc.status = CandidateStatus.MATCH_PENDING.value
+            pc.status = CandidateStateMachine.transition(
+                CandidateStatus(pc.status), CandidateStatus.MATCH_PENDING
+            ).value
+            pc.cv_task_id = None
             sync_process_status_sync(db, proc_uuid)
 
             db.commit()
@@ -609,12 +690,48 @@ def parse_cv(
 
         except Exception as exc:
             db.rollback()
+            if isinstance(exc, CVResponseError):
+                logger.warning(
+                    "CV response rejected stage=%s model=%s process_candidate=%s task=%s reason=%s",
+                    stage, model, pc_uuid, self.request.id, exc.reason,
+                )
+            # Keep the claim while Celery has another attempt scheduled. Otherwise
+            # another analysis request can enqueue the same candidate concurrently.
+            retryable = not isinstance(exc, BadRequestError) and (
+                not isinstance(exc, CVResponseError) or exc.retryable
+            )
+            if retryable and self.request.retries < self.max_retries:
+                raise self.retry(exc=exc)
             try:
                 pc = db.get(ProcessCandidate, pc_uuid)
-                if pc:
-                    pc.status = CandidateStatus.CV_ERROR.value
+                if (pc and pc.status == CandidateStatus.CV_PROCESSING.value
+                        and pc.cv_task_id == self.request.id):
+                    pc.status = CandidateStateMachine.transition(
+                        CandidateStatus(pc.status), CandidateStatus.CV_ERROR
+                    ).value
+                    pc.cv_task_id = None
                     sync_process_status_sync(db, proc_uuid)
                     db.commit()
             except Exception:
                 pass
-            raise self.retry(exc=exc)
+            raise
+
+
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=60, name="parse_cv")
+def parse_cv(
+    self: Any, candidate_id: str, process_candidate_id: str, process_id: str
+) -> dict[str, Any]:
+    # A session advisory lock remains held across the commits made by the task.
+    # Duplicate deliveries wait and then observe that the claim has completed.
+    with _engine.connect() as lock_connection:
+        lock_connection.execute(
+            text("SELECT pg_advisory_lock(hashtextextended(:key, 0))"),
+            {"key": f"cv-analysis:{process_candidate_id}"},
+        )
+        try:
+            return _parse_cv(self, candidate_id, process_candidate_id, process_id)
+        finally:
+            lock_connection.execute(
+                text("SELECT pg_advisory_unlock(hashtextextended(:key, 0))"),
+                {"key": f"cv-analysis:{process_candidate_id}"},
+            )
