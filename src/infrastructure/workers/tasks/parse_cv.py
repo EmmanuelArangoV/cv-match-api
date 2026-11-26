@@ -389,6 +389,10 @@ def _parse_cv(
             def record_response(response: object) -> None:
                 assert candidate is not None
                 usage = extract_openai_usage(response)
+                logger.info(
+                    "CV response received stage=%s model=%s response_id=%s usage=%s",
+                    stage, model, getattr(response, "id", None), usage,
+                )
                 cost = calculate_openai_cost(model, *usage)
                 response_id = getattr(response, "id", None)
                 if not response_id:
